@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+.env
+.superpowers/
+data/
+*.db
+*.db-shm
+*.db-wal

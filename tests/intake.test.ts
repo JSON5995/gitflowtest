@@ -85,6 +85,23 @@ describe("intake planning", () => {
     expect(plan.title).toBe("Repair checkout");
     expect(calls).toBe(2);
   });
+
+  it("passes prepared image evidence to the planning model", async () => {
+    let images: string[] | undefined;
+    const model = {
+      createPlan: async (input: { images?: string[] }) => {
+        images = input.images;
+        return validPlan();
+      },
+    };
+
+    await buildWorkPlan(bundle("Screenshot attached"), {}, model, {
+      text: "Screenshot attached",
+      images: ["data:image/png;base64,c2NyZWVu"],
+    });
+
+    expect(images).toEqual(["data:image/png;base64,c2NyZWVu"]);
+  });
 });
 
 describe("feedback preparation", () => {

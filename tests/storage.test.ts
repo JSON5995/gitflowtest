@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { openStorage, type Storage } from "../src/storage.js";
 
@@ -105,5 +106,63 @@ describe("storage", () => {
 
     storage.closeDraft(draftId, "submitted");
     expect(storage.getOpenDraft("-100", null, "123", 1_003)).toBeNull();
+  });
+
+  it("links chat work to an issue and pull request", () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+    storage.linkWork({
+      repository: "acme/store",
+      issueNumber: 17,
+      chatId: "-100",
+      topicId: "77",
+      pullRequestNumber: null,
+      providerJobId: null,
+      fixRounds: 0,
+      state: "ready",
+      headSha: null,
+      passedChecks: [],
+    }, 1_000);
+    const linked = {
+      ...storage.getWorkByIssue("acme/store", 17)!,
+      pullRequestNumber: 12,
+      headSha: "abc",
+      passedChecks: ["ci"],
+    };
+    storage.saveWork(linked, 2_000);
+
+    expect(storage.getWorkByPullRequest("acme/store", 12)).toEqual(linked);
+  });
+
+  it("upgrades a v1 work-links table without losing existing records", () => {
+    const directory = mkdtempSync(join(tmpdir(), "gitflow-storage-"));
+    cleanupPaths.push(directory);
+    const databasePath = join(directory, "flow.db");
+    const legacy = new Database(databasePath);
+    legacy.exec(`
+      CREATE TABLE work_links (
+        repository TEXT NOT NULL,
+        issue_number INTEGER NOT NULL,
+        chat_id TEXT NOT NULL,
+        topic_id TEXT NOT NULL DEFAULT '',
+        pull_request_number INTEGER,
+        provider_job_id TEXT,
+        fix_rounds INTEGER NOT NULL DEFAULT 0,
+        state TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(repository, issue_number)
+      );
+      INSERT INTO work_links VALUES ('acme/store', 17, '-100', '', NULL, NULL, 0, 'ready', 1000);
+    `);
+    legacy.close();
+
+    const storage = openStorage(databasePath);
+    storages.push(storage);
+
+    expect(storage.getWorkByIssue("acme/store", 17)).toMatchObject({
+      state: "ready",
+      headSha: null,
+      passedChecks: [],
+    });
   });
 });

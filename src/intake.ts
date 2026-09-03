@@ -76,11 +76,13 @@ export const buildWorkPlan = async (
   bundle: FeedbackBundle,
   context: RepositoryContext,
   model: IntakeModel,
+  prepared?: PreparedFeedback,
 ): Promise<WorkPlan> => {
   const planningInput: PlanningInput = {
-    feedback: bundleText(bundle),
+    feedback: prepared?.text ?? bundleText(bundle),
     repository: bundle.repository,
     context,
+    ...(prepared?.images.length ? { images: prepared.images } : {}),
   };
 
   let plan: WorkPlan;

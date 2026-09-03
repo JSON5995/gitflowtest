@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import type { FeedbackItem } from "./domain.js";
+import type { FeedbackItem, FlowState } from "./domain.js";
 
 export type Job = {
   id: number;
@@ -34,6 +34,19 @@ export type Draft = {
   userId: string;
   messageIds: number[];
   items: FeedbackItem[];
+};
+
+export type WorkRecord = {
+  repository: string;
+  issueNumber: number;
+  chatId: string;
+  topicId: string | null;
+  pullRequestNumber: number | null;
+  providerJobId: string | null;
+  fixRounds: number;
+  state: FlowState;
+  headSha: string | null;
+  passedChecks: string[];
 };
 
 type FailureOptions = {
@@ -75,6 +88,10 @@ export type Storage = {
   appendDraftItem(draftId: number, messageId: number, item: FeedbackItem, now?: number): boolean;
   getOpenDraft(chatId: string, topicId: string | null, userId: string, now?: number): Draft | null;
   closeDraft(id: number, status: "submitted" | "cancelled" | "expired"): void;
+  linkWork(work: WorkRecord, now?: number): void;
+  saveWork(work: WorkRecord, now?: number): void;
+  getWorkByIssue(repository: string, issueNumber: number): WorkRecord | null;
+  getWorkByPullRequest(repository: string, pullRequestNumber: number): WorkRecord | null;
   isReady(): boolean;
   close(): void;
 };
@@ -113,6 +130,19 @@ type DraftRow = {
 type DraftItemRow = {
   message_id: number;
   payload: string;
+};
+
+type WorkRow = {
+  repository: string;
+  issue_number: number;
+  chat_id: string;
+  topic_id: string;
+  pull_request_number: number | null;
+  provider_job_id: string | null;
+  fix_rounds: number;
+  state: FlowState;
+  head_sha: string | null;
+  passed_checks: string;
 };
 
 const migration = `
@@ -181,6 +211,8 @@ CREATE TABLE IF NOT EXISTS work_links (
   provider_job_id TEXT,
   fix_rounds INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL,
+  head_sha TEXT,
+  passed_checks TEXT NOT NULL DEFAULT '[]',
   updated_at INTEGER NOT NULL,
   PRIMARY KEY(repository, issue_number)
 );
@@ -209,6 +241,13 @@ export const openStorage = (path: string): Storage => {
   database.pragma("foreign_keys = ON");
   database.pragma("busy_timeout = 5000");
   database.exec(migration);
+  const workColumns = new Set(
+    (database.pragma("table_info(work_links)") as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!workColumns.has("head_sha")) database.exec("ALTER TABLE work_links ADD COLUMN head_sha TEXT");
+  if (!workColumns.has("passed_checks")) {
+    database.exec("ALTER TABLE work_links ADD COLUMN passed_checks TEXT NOT NULL DEFAULT '[]'");
+  }
   let open = true;
 
   const claimJobTransaction = database.transaction((now: number, leaseMs: number) => {
@@ -246,6 +285,55 @@ export const openStorage = (path: string): Storage => {
       .run(now + leaseMs, now, row.id);
     return row;
   });
+
+  const mapWork = (row: WorkRow | undefined): WorkRecord | null =>
+    row
+      ? {
+          repository: row.repository,
+          issueNumber: row.issue_number,
+          chatId: row.chat_id,
+          topicId: row.topic_id === "" ? null : row.topic_id,
+          pullRequestNumber: row.pull_request_number,
+          providerJobId: row.provider_job_id,
+          fixRounds: row.fix_rounds,
+          state: row.state,
+          headSha: row.head_sha,
+          passedChecks: JSON.parse(row.passed_checks) as string[],
+        }
+      : null;
+
+  const saveWork = (work: WorkRecord, now: number): void => {
+    database
+      .prepare(
+        `INSERT INTO work_links(
+           repository, issue_number, chat_id, topic_id, pull_request_number,
+           provider_job_id, fix_rounds, state, head_sha, passed_checks, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(repository, issue_number) DO UPDATE SET
+           chat_id = excluded.chat_id,
+           topic_id = excluded.topic_id,
+           pull_request_number = excluded.pull_request_number,
+           provider_job_id = excluded.provider_job_id,
+           fix_rounds = excluded.fix_rounds,
+           state = excluded.state,
+           head_sha = excluded.head_sha,
+           passed_checks = excluded.passed_checks,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        work.repository,
+        work.issueNumber,
+        work.chatId,
+        work.topicId ?? "",
+        work.pullRequestNumber,
+        work.providerJobId,
+        work.fixRounds,
+        work.state,
+        work.headSha,
+        JSON.stringify(work.passedChecks),
+        now,
+      );
+  };
 
   return {
     recordWebhook(source, deliveryId, payloadHash) {
@@ -412,6 +500,28 @@ export const openStorage = (path: string): Storage => {
 
     closeDraft(id, status) {
       database.prepare("UPDATE drafts SET status = ? WHERE id = ? AND status = 'open'").run(status, id);
+    },
+
+    linkWork(work, now = Date.now()) {
+      saveWork(work, now);
+    },
+
+    saveWork(work, now = Date.now()) {
+      saveWork(work, now);
+    },
+
+    getWorkByIssue(repository, issueNumber) {
+      const row = database
+        .prepare("SELECT * FROM work_links WHERE repository = ? AND issue_number = ?")
+        .get(repository, issueNumber) as WorkRow | undefined;
+      return mapWork(row);
+    },
+
+    getWorkByPullRequest(repository, pullRequestNumber) {
+      const row = database
+        .prepare("SELECT * FROM work_links WHERE repository = ? AND pull_request_number = ?")
+        .get(repository, pullRequestNumber) as WorkRow | undefined;
+      return mapWork(row);
     },
 
     isReady() {

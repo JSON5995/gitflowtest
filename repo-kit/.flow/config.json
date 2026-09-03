@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "install": ["npm", "ci"],
+  "checks": [
+    ["npm", "run", "lint"],
+    ["npm", "run", "typecheck"],
+    ["npm", "test"],
+    ["npm", "run", "build"]
+  ],
+  "qa": [["npm", "test"]],
+  "maxParallelBuilds": 2,
+  "protectedPaths": [
+    ".github/workflows/",
+    "migrations/",
+    ".flow/"
+  ]
+}

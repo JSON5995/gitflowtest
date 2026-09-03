@@ -1,0 +1,72 @@
+name: Flow QA
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: flow-qa-${{ github.repository }}-pull_request-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  qa:
+    name: qa
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out merge candidate without credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Materialize contract and runner from the base commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git show "${{ github.event.pull_request.base.sha }}:.flow/config.json" > "$RUNNER_TEMP/base-flow-config.json"
+          git show "${BASE_SHA}:scripts/run-contract.mjs" > "$RUNNER_TEMP/run-contract.mjs"
+
+      - name: Install and run deterministic checks
+        run: |
+          node "$RUNNER_TEMP/run-contract.mjs" install --config "$RUNNER_TEMP/base-flow-config.json"
+          node "$RUNNER_TEMP/run-contract.mjs" checks --config "$RUNNER_TEMP/base-flow-config.json"
+
+      - name: Run QA with the configured application
+        run: |
+          mkdir -p .flow/evidence
+          HEALTH_URL="$(node -e "const c=require(process.argv[1]);process.stdout.write(c.healthUrl||'')" "$RUNNER_TEMP/base-flow-config.json")"
+          if [ -n "$HEALTH_URL" ]; then
+            node "$RUNNER_TEMP/run-contract.mjs" start --config "$RUNNER_TEMP/base-flow-config.json" > .flow/evidence/server.log 2>&1 &
+            FLOW_SERVER_PID=$!
+            trap 'kill "$FLOW_SERVER_PID" 2>/dev/null || true' EXIT
+            READY=0
+            for ATTEMPT in $(seq 1 30); do
+              if curl --fail --silent --show-error "$HEALTH_URL" > .flow/evidence/health.txt; then
+                READY=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "$READY" -ne 1 ]; then
+              echo "Application failed its configured health check" >&2
+              exit 1
+            fi
+          fi
+          node "$RUNNER_TEMP/run-contract.mjs" qa --config "$RUNNER_TEMP/base-flow-config.json"
+
+      - name: Upload QA evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: flow-qa-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: |
+            .flow/evidence/
+            test-results/
+            playwright-report/
+            coverage/
+          if-no-files-found: ignore
+          retention-days: 14

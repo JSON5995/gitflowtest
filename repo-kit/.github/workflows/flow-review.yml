@@ -1,0 +1,68 @@
+name: AI Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: flow-review-${{ github.repository }}-pull_request-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: ai-review
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      actions: read
+      id-token: write
+    steps:
+      - name: Check out merge candidate without credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Materialize review gate from the base commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git show "${{ github.event.pull_request.base.sha }}:scripts/check-review.mjs" > "$RUNNER_TEMP/base-check-review.mjs"
+
+      - name: Review with Claude
+        id: review
+        uses: anthropics/claude-code-action@4e0bf1e0e39f3c587b2804a2a9e6ed3283679f7d # v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          allowed_bots: ${{ vars.FLOW_BOT_LOGIN }}
+          prompt: >-
+            Review pull request ${{ github.event.pull_request.number }} against its linked issue and
+            .flow/AI_RULES.md. Review only the introduced diff. Report correctness, security,
+            regression, and missing-test findings. Do not edit files, push, approve, or merge.
+          claude_args: >-
+            --max-turns 8
+            --allowedTools "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git status:*)"
+            --json-schema '{"type":"object","additionalProperties":false,"required":["verdict","summary","findings"],"properties":{"verdict":{"type":"string","enum":["pass","changes_required"]},"summary":{"type":"string"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["severity","path","line","problem","recommendedFix"],"properties":{"severity":{"type":"string","enum":["critical","high","medium","low"]},"path":{"type":"string"},"line":{"type":"integer","minimum":1},"problem":{"type":"string"},"recommendedFix":{"type":"string"}}}}}}'
+
+      - name: Render review and apply gate
+        id: gate
+        continue-on-error: true
+        env:
+          FLOW_REVIEW_JSON: ${{ steps.review.outputs.structured_output }}
+          FLOW_REVIEW_PATH: ${{ runner.temp }}/flow-review.md
+        run: node "$RUNNER_TEMP/base-check-review.mjs"
+
+      - name: Post review summary
+        if: always() && steps.review.outputs.structured_output != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --body-file "$RUNNER_TEMP/flow-review.md"
+
+      - name: Fail for blocking findings
+        if: steps.gate.outcome == 'failure'
+        run: exit 1

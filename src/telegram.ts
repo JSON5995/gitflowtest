@@ -184,3 +184,76 @@ export const registerTelegramRoutes = (
     return reply.code(200).send({ ok: true });
   });
 };
+
+type TelegramClientOptions = {
+  token: string;
+  fetch?: typeof fetch;
+};
+
+const TelegramResponseSchema = z.object({
+  ok: z.literal(true),
+  result: z.unknown(),
+});
+
+export type TelegramClient = {
+  downloadFile(fileId: string): Promise<{ bytes: Buffer; mimeType: string }>;
+  sendMessage(chatId: string, topicId: string | null, text: string): Promise<void>;
+  setWebhook(url: string, secretToken: string): Promise<void>;
+};
+
+export const createTelegramClient = (options: TelegramClientOptions): TelegramClient => {
+  const request = options.fetch ?? fetch;
+  const apiBase = `https://api.telegram.org/bot${options.token}`;
+
+  const call = async (method: string, body: unknown): Promise<unknown> => {
+    const response = await request(`${apiBase}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`Telegram ${method} failed with ${response.status}`);
+    return TelegramResponseSchema.parse(await response.json()).result;
+  };
+
+  return {
+    async downloadFile(fileId) {
+      const result = z
+        .object({ file_path: z.string(), file_size: z.number().int().nonnegative().optional() })
+        .parse(await call("getFile", { file_id: fileId }));
+      if (result.file_size !== undefined && result.file_size > 20 * 1024 * 1024) {
+        throw new Error("Telegram Bot API attachments must be 20 MB or smaller");
+      }
+      const response = await request(
+        `https://api.telegram.org/file/bot${options.token}/${result.file_path}`,
+      );
+      if (!response.ok) throw new Error(`Telegram file download failed with ${response.status}`);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.byteLength > 20 * 1024 * 1024) {
+        throw new Error("Telegram Bot API attachments must be 20 MB or smaller");
+      }
+      return {
+        bytes,
+        mimeType: response.headers.get("content-type") ?? "application/octet-stream",
+      };
+    },
+
+    async sendMessage(chatId, topicId, text) {
+      await call("sendMessage", {
+        chat_id: chatId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        ...(topicId === null ? {} : { message_thread_id: Number(topicId) }),
+      });
+    },
+
+    async setWebhook(url, secretToken) {
+      await call("setWebhook", {
+        url,
+        secret_token: secretToken,
+        allowed_updates: ["message", "callback_query"],
+        drop_pending_updates: false,
+      });
+    },
+  };
+};

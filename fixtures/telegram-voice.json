@@ -1,0 +1,16 @@
+{
+  "update_id": 1003,
+  "message": {
+    "message_id": 13,
+    "from": { "id": 456, "is_bot": false, "first_name": "CTO" },
+    "chat": { "id": 456, "type": "private" },
+    "date": 1788444002,
+    "voice": {
+      "file_id": "voice-file",
+      "file_unique_id": "voice-unique",
+      "duration": 18,
+      "mime_type": "audio/ogg",
+      "file_size": 42000
+    }
+  }
+}

@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
+import type { FeedbackItem } from "./domain.js";
 
 export type Job = {
   id: number;
@@ -17,6 +18,22 @@ export type Notification = {
   topicId: string | null;
   text: string;
   attempts: number;
+};
+
+export type ChatBinding = {
+  chatId: string;
+  topicId: string | null;
+  installationId: number;
+  repository: string;
+};
+
+export type Draft = {
+  id: number;
+  chatId: string;
+  topicId: string | null;
+  userId: string;
+  messageIds: number[];
+  items: FeedbackItem[];
 };
 
 type FailureOptions = {
@@ -40,6 +57,24 @@ export type Storage = {
   ): boolean;
   claimNotification(now?: number, leaseMs?: number): Notification | null;
   completeNotification(id: number): void;
+  bindChat(
+    chatId: string,
+    topicId: string | null,
+    installationId: number,
+    repository: string,
+    now?: number,
+  ): void;
+  getChatBinding(chatId: string, topicId: string | null): ChatBinding | null;
+  startDraft(
+    chatId: string,
+    topicId: string | null,
+    userId: string,
+    now?: number,
+    ttlMs?: number,
+  ): number;
+  appendDraftItem(draftId: number, messageId: number, item: FeedbackItem, now?: number): boolean;
+  getOpenDraft(chatId: string, topicId: string | null, userId: string, now?: number): Draft | null;
+  closeDraft(id: number, status: "submitted" | "cancelled" | "expired"): void;
   isReady(): boolean;
   close(): void;
 };
@@ -59,6 +94,25 @@ type NotificationRow = {
   topic_id: string | null;
   text: string;
   attempts: number;
+};
+
+type BindingRow = {
+  chat_id: string;
+  topic_id: string;
+  installation_id: number;
+  repository: string;
+};
+
+type DraftRow = {
+  id: number;
+  chat_id: string;
+  topic_id: string;
+  user_id: string;
+};
+
+type DraftItemRow = {
+  message_id: number;
+  payload: string;
 };
 
 const migration = `
@@ -274,6 +328,90 @@ export const openStorage = (path: string): Storage => {
 
     completeNotification(id) {
       database.prepare("UPDATE outbox SET status = 'complete', lease_until = NULL, updated_at = ? WHERE id = ?").run(Date.now(), id);
+    },
+
+    bindChat(chatId, topicId, installationId, repository, now = Date.now()) {
+      database
+        .prepare(
+          `INSERT INTO chat_bindings(chat_id, topic_id, installation_id, repository, created_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(chat_id, topic_id) DO UPDATE SET
+             installation_id = excluded.installation_id,
+             repository = excluded.repository,
+             created_at = excluded.created_at`,
+        )
+        .run(chatId, topicId ?? "", installationId, repository, now);
+    },
+
+    getChatBinding(chatId, topicId) {
+      const row = database
+        .prepare(
+          `SELECT chat_id, topic_id, installation_id, repository
+           FROM chat_bindings WHERE chat_id = ? AND topic_id = ?`,
+        )
+        .get(chatId, topicId ?? "") as BindingRow | undefined;
+      return row
+        ? {
+            chatId: row.chat_id,
+            topicId: row.topic_id === "" ? null : row.topic_id,
+            installationId: row.installation_id,
+            repository: row.repository,
+          }
+        : null;
+    },
+
+    startDraft(chatId, topicId, userId, now = Date.now(), ttlMs = 86_400_000) {
+      const transaction = database.transaction(() => {
+        database
+          .prepare(
+            `UPDATE drafts SET status = 'cancelled'
+             WHERE chat_id = ? AND topic_id = ? AND user_id = ? AND status = 'open'`,
+          )
+          .run(chatId, topicId ?? "", userId);
+        const result = database
+          .prepare(
+            `INSERT INTO drafts(chat_id, topic_id, user_id, expires_at, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+          )
+          .run(chatId, topicId ?? "", userId, now + ttlMs, now);
+        return Number(result.lastInsertRowid);
+      });
+      return transaction.immediate();
+    },
+
+    appendDraftItem(draftId, messageId, item, now = Date.now()) {
+      const result = database
+        .prepare(
+          `INSERT OR IGNORE INTO draft_items(draft_id, message_id, kind, payload, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(draftId, messageId, item.kind, JSON.stringify(item), now);
+      return result.changes === 1;
+    },
+
+    getOpenDraft(chatId, topicId, userId, now = Date.now()) {
+      const row = database
+        .prepare(
+          `SELECT id, chat_id, topic_id, user_id FROM drafts
+           WHERE chat_id = ? AND topic_id = ? AND user_id = ? AND status = 'open' AND expires_at > ?`,
+        )
+        .get(chatId, topicId ?? "", userId, now) as DraftRow | undefined;
+      if (!row) return null;
+      const items = database
+        .prepare("SELECT message_id, payload FROM draft_items WHERE draft_id = ? ORDER BY id")
+        .all(row.id) as DraftItemRow[];
+      return {
+        id: row.id,
+        chatId: row.chat_id,
+        topicId: row.topic_id === "" ? null : row.topic_id,
+        userId: row.user_id,
+        messageIds: items.map((item) => item.message_id),
+        items: items.map((item) => JSON.parse(item.payload) as FeedbackItem),
+      };
+    },
+
+    closeDraft(id, status) {
+      database.prepare("UPDATE drafts SET status = ? WHERE id = ? AND status = 'open'").run(status, id);
     },
 
     isReady() {

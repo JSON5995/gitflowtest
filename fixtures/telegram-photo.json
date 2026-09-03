@@ -1,0 +1,14 @@
+{
+  "update_id": 1002,
+  "message": {
+    "message_id": 12,
+    "from": { "id": 123, "is_bot": false, "first_name": "Owner" },
+    "chat": { "id": -100555, "type": "supergroup" },
+    "date": 1788444001,
+    "caption": "The broken state",
+    "photo": [
+      { "file_id": "small", "file_unique_id": "s", "width": 90, "height": 90, "file_size": 1000 },
+      { "file_id": "large", "file_unique_id": "l", "width": 1280, "height": 720, "file_size": 120000 }
+    ]
+  }
+}

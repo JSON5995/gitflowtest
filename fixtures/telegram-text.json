@@ -1,0 +1,11 @@
+{
+  "update_id": 1001,
+  "message": {
+    "message_id": 11,
+    "message_thread_id": 77,
+    "from": { "id": 123, "is_bot": false, "first_name": "Owner" },
+    "chat": { "id": -100555, "type": "supergroup" },
+    "date": 1788444000,
+    "text": "The checkout button does nothing"
+  }
+}

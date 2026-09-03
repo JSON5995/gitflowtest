@@ -75,4 +75,35 @@ describe("storage", () => {
     storage.close();
     expect(storage.isReady()).toBe(false);
   });
+
+  it("binds a Telegram topic to one repository", () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+
+    storage.bindChat("-100", "77", 99, "acme/store", 1_000);
+
+    expect(storage.getChatBinding("-100", "77")).toEqual({
+      chatId: "-100",
+      topicId: "77",
+      installationId: 99,
+      repository: "acme/store",
+    });
+    expect(storage.getChatBinding("-100", null)).toBeNull();
+  });
+
+  it("collects an open draft and closes it on submission", () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+    const draftId = storage.startDraft("-100", null, "123", 1_000, 86_400_000);
+    storage.appendDraftItem(draftId, 7, { kind: "text", text: "Fix checkout" }, 1_001);
+
+    expect(storage.getOpenDraft("-100", null, "123", 1_002)).toMatchObject({
+      id: draftId,
+      messageIds: [7],
+      items: [{ kind: "text", text: "Fix checkout" }],
+    });
+
+    storage.closeDraft(draftId, "submitted");
+    expect(storage.getOpenDraft("-100", null, "123", 1_003)).toBeNull();
+  });
 });

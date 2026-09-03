@@ -1,0 +1,12 @@
+{
+  "action": "opened",
+  "installation": { "id": 99 },
+  "repository": { "full_name": "acme/store" },
+  "pull_request": {
+    "number": 12,
+    "html_url": "https://github.com/acme/store/pull/12",
+    "head": { "sha": "abc123" },
+    "base": { "sha": "def456" }
+  },
+  "sender": { "login": "flow-ai[bot]" }
+}

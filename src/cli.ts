@@ -9,7 +9,9 @@ import { ZodError } from "zod";
 import { loadConfig } from "./config.js";
 import { createGitHubAppAccess } from "./github-app.js";
 import { createGitHubTokenApi, readCurrentGitHubRepository, readGitHubCliToken } from "./github-token.js";
+import { ensurePrerequisites } from "./prerequisites.js";
 import { loadRepositoryKit, provisionRepository } from "./provision.js";
+import { deployToRailway } from "./railway.js";
 import { openStorage } from "./storage.js";
 
 type CliContext = {
@@ -19,6 +21,8 @@ type CliContext = {
   envTemplatePath: string;
   stdout(message: string): void;
   stderr(message: string): void;
+  ensurePrerequisites: typeof ensurePrerequisites;
+  deployToRailway: typeof deployToRailway;
 };
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,6 +34,8 @@ const defaultContext: CliContext = {
   envTemplatePath: join(projectRoot, ".env.example"),
   stdout: console.log,
   stderr: console.error,
+  ensurePrerequisites,
+  deployToRailway,
 };
 
 export const isDirectCliInvocation = (invokedPath: string, moduleUrl: string): boolean => {
@@ -41,11 +47,12 @@ export const isDirectCliInvocation = (invokedPath: string, moduleUrl: string): b
   }
 };
 
-const help = `Flow AI
+const help = `Flow
 
-  flow-ai setup [--agent NAME]  Create the service configuration
-  flow-ai doctor                Validate configuration and local storage
-  flow-ai repo add [OWNER/REPO] Configure the current GitHub project, or an explicit repository`;
+  flow init [--agent NAME]       Check tools and create the service configuration
+  flow doctor                    Validate configuration and local storage
+  flow repo add [OWNER/REPO]     Configure the current GitHub project, or an explicit repository
+  flow host railway [OPTIONS]    Deploy or update the central service on Railway`;
 
 const setEnvironmentValue = (
   contents: string,
@@ -60,10 +67,11 @@ const setEnvironmentValue = (
   return contents.replace(pattern, `${key}=${value}`);
 };
 
-const setup = async (context: CliContext, agent?: string): Promise<number> => {
+const initialize = async (context: CliContext, agent?: string): Promise<number> => {
   if (agent && !["claude", "codex", "cursor"].includes(agent)) {
     throw new Error("--agent must be claude, codex, or cursor");
   }
+  await context.ensurePrerequisites({ stdout: context.stdout });
   const destination = join(context.projectRoot, ".env");
   try {
     await copyFile(context.envTemplatePath, destination, constants.COPYFILE_EXCL);
@@ -76,7 +84,7 @@ const setup = async (context: CliContext, agent?: string): Promise<number> => {
       configured = setEnvironmentValue(configured, "FLOW_AGENT", agent, true);
     }
     await writeFile(destination, configured);
-    context.stdout(`Created ${destination}. Add the credential values, then run flow-ai doctor.`);
+    context.stdout(`Created ${destination}. Add the credential values, then run flow doctor.`);
   } catch (error) {
     const code = typeof error === "object" && error !== null && "code" in error ? error.code : null;
     if (code !== "EEXIST") throw error;
@@ -130,12 +138,46 @@ const addRepository = async (repository: string | undefined, context: CliContext
     checkIntegrationId: config.github.appId,
   });
   if (result.mergeGateInstalled) {
-    context.stdout(`Installed Flow AI in ${targetRepository}@${result.defaultBranch} (${result.commitSha.slice(0, 12)}).`);
+    context.stdout(`Installed Flow in ${targetRepository}@${result.defaultBranch} (${result.commitSha.slice(0, 12)}).`);
     context.stdout(`In Telegram, run /connect ${targetRepository}, send feedback, then /ship.`);
   } else {
     context.stdout(`Setup pull request is waiting for the repository's required approval: ${result.setupPullRequestUrl ?? targetRepository}`);
     context.stdout("After it is merged, run the same repo add command once to install the human merge gate.");
   }
+  return 0;
+};
+
+const hostOnRailway = async (argv: string[], context: CliContext): Promise<number> => {
+  let projectName: string | undefined;
+  let workspace: string | undefined;
+  let serviceName: string | undefined;
+  let allowDirty = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const option = argv[index];
+    if (option === "--allow-dirty") {
+      allowDirty = true;
+      continue;
+    }
+    if (["--project", "--workspace", "--service"].includes(option ?? "")) {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("--")) throw new Error(`${option} requires a value`);
+      if (option === "--project") projectName = value;
+      if (option === "--workspace") workspace = value;
+      if (option === "--service") serviceName = value;
+      index += 1;
+      continue;
+    }
+    throw new Error("Usage: flow host railway [--project NAME] [--workspace NAME] [--service NAME] [--allow-dirty]");
+  }
+  await context.deployToRailway({
+    env: context.env,
+    projectRoot: context.projectRoot,
+    ...(projectName ? { projectName } : {}),
+    ...(workspace ? { workspace } : {}),
+    ...(serviceName ? { serviceName } : {}),
+    allowDirty,
+    stdout: context.stdout,
+  });
   return 0;
 };
 
@@ -153,12 +195,14 @@ export const runCli = async (
 ): Promise<number> => {
   const context: CliContext = { ...defaultContext, ...overrides };
   try {
-    if (argv[0] === "setup") {
-      if (argv[1] && argv[1] !== "--agent") throw new Error("Usage: ./flow setup [--agent claude|codex|cursor]");
-      return await setup(context, argv[1] === "--agent" ? argv[2] : undefined);
+    if (argv[0] === "init" || argv[0] === "setup") {
+      if (argv[1] && argv[1] !== "--agent") throw new Error("Usage: flow init [--agent claude|codex|cursor]");
+      if (argv[0] === "setup") context.stdout("`flow setup` is now `flow init`; continuing.");
+      return await initialize(context, argv[1] === "--agent" ? argv[2] : undefined);
     }
     if (argv[0] === "doctor") return await doctor(context);
     if (argv[0] === "repo" && argv[1] === "add") return await addRepository(argv[2], context);
+    if (argv[0] === "host" && argv[1] === "railway") return await hostOnRailway(argv.slice(2), context);
     context.stdout(help);
     return argv.length === 0 || argv[0] === "help" || argv[0] === "--help" ? 0 : 1;
   } catch (error) {

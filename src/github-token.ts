@@ -48,7 +48,7 @@ export const readCurrentGitHubRepository = async (
       throw new Error([
         `No GitHub remote was found for ${cwd}.`,
         "git remote add origin https://github.com/OWNER/REPO.git",
-        "flow-ai repo add OWNER/REPO",
+        "flow repo add OWNER/REPO",
         "If origin is your fork, add the source project separately:",
         "git remote add upstream https://github.com/ORIGINAL_OWNER/REPO.git",
       ].join("\n"), { cause: error });
@@ -91,7 +91,7 @@ export const createGitHubTokenApi = (options: TokenApiOptions): GitHubApi => ({
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${options.token}`,
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "flow-ai-cli",
+        "User-Agent": "flow-cli",
         ...(body ? { "Content-Type": "application/json" } : {}),
       },
       ...(body ? { body } : {}),

@@ -91,7 +91,7 @@ export const startApplication = async (config: AppConfig): Promise<RunningApplic
 
 export const main = async (): Promise<void> => {
   const application = await startApplication(loadConfig(process.env));
-  console.info(`Flow AI listening at ${application.address}`);
+  console.info(`Flow listening at ${application.address}`);
   let closing = false;
   const close = async (): Promise<void> => {
     if (closing) return;

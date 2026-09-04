@@ -1,10 +1,10 @@
 {
-  "name": "gitflow-ai",
+  "name": "flow",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "flow-ai": "dist/cli.js"
+    "flow": "dist/cli.js"
   },
   "engines": {
     "node": ">=22"

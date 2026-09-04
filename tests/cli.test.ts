@@ -16,7 +16,7 @@ describe("Flow CLI", () => {
     const directory = mkdtempSync(join(tmpdir(), "gitflow-cli-link-"));
     cleanupPaths.push(directory);
     const cliPath = join(directory, "cli.js");
-    const linkedPath = join(directory, "flow-ai");
+    const linkedPath = join(directory, "flow");
     writeFileSync(cliPath, "#!/usr/bin/env node\n");
     symlinkSync(cliPath, linkedPath);
 
@@ -36,9 +36,10 @@ describe("Flow CLI", () => {
       envTemplatePath: template,
       stdout: (message: string) => { output.push(message); },
       stderr: () => undefined,
+      ensurePrerequisites: async () => undefined,
     };
 
-    expect(await runCli(["setup"], context)).toBe(0);
+    expect(await runCli(["init"], context)).toBe(0);
     const configured = await readFile(join(directory, ".env"), "utf8");
     expect(configured).toContain("flow.example.com");
     expect(configured).toMatch(/^TELEGRAM_WEBHOOK_SECRET=[A-Za-z0-9_-]{32,}$/m);
@@ -46,7 +47,7 @@ describe("Flow CLI", () => {
     expect(configured).toMatch(/^FLOW_ADMIN_PASSWORD=[A-Za-z0-9_-]{32,}$/m);
     expect((await stat(join(directory, ".env"))).mode & 0o777).toBe(0o600);
     writeFileSync(join(directory, ".env"), "KEEP=me\n");
-    expect(await runCli(["setup"], context)).toBe(0);
+    expect(await runCli(["init"], context)).toBe(0);
     expect(await readFile(join(directory, ".env"), "utf8")).toBe("KEEP=me\n");
     expect(output.join("\n")).toContain("already exists");
   });
@@ -57,13 +58,14 @@ describe("Flow CLI", () => {
     const template = join(directory, "template.env");
     writeFileSync(template, "FLOW_AGENT=\nFLOW_BUILDER=codex\nFLOW_REVIEWER=claude\n");
 
-    expect(await runCli(["setup", "--agent", "cursor"], {
+    expect(await runCli(["init", "--agent", "cursor"], {
       cwd: directory,
       env: {},
       projectRoot: directory,
       envTemplatePath: template,
       stdout: () => undefined,
       stderr: () => undefined,
+      ensurePrerequisites: async () => undefined,
     })).toBe(0);
     expect(await readFile(join(directory, ".env"), "utf8")).toContain("FLOW_AGENT=cursor");
   });
@@ -83,5 +85,37 @@ describe("Flow CLI", () => {
     expect(code).toBe(1);
     expect(output.join("\n")).not.toContain(secret);
     expect(output.join("\n")).toContain("Configuration is incomplete");
+  });
+
+  it("passes Railway hosting options to the deployment flow", async () => {
+    const calls: unknown[] = [];
+    const code = await runCli([
+      "host", "railway", "--project", "company-flow", "--workspace", "Platform", "--allow-dirty",
+    ], {
+      cwd: process.cwd(),
+      env: { FLOW_ADMIN_PASSWORD: "secret" },
+      projectRoot: "/opt/flow",
+      envTemplatePath: "/opt/flow/.env.example",
+      stdout: () => undefined,
+      stderr: () => undefined,
+      deployToRailway: async (options) => {
+        calls.push(options);
+        return {
+          publicUrl: "https://flow.up.railway.app",
+          adminUrl: "https://flow.up.railway.app/admin",
+          healthUrl: "https://flow.up.railway.app/health/ready",
+          githubWebhookUrl: "https://flow.up.railway.app/webhooks/github",
+          telegramWebhookUrl: "https://flow.up.railway.app/webhooks/telegram",
+        };
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(calls).toEqual([expect.objectContaining({
+      projectRoot: "/opt/flow",
+      projectName: "company-flow",
+      workspace: "Platform",
+      allowDirty: true,
+    })]);
   });
 });

@@ -144,7 +144,7 @@ const renderAdmin = (summary: AdminSummary): string => {
   <main class="shell">
     <header class="masthead">
       <div>
-        <p class="eyebrow">Flow AI / operator console</p>
+        <p class="eyebrow">Flow / operator console</p>
         <h1>Flow operations</h1>
         <p class="lede">A read-only view of what is moving, waiting, and needs attention.</p>
       </div>

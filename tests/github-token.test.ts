@@ -22,7 +22,7 @@ describe("GitHub CLI provisioning API", () => {
     })).rejects.toThrow([
       "No GitHub remote was found for /projects/store.",
       "git remote add origin https://github.com/OWNER/REPO.git",
-      "flow-ai repo add OWNER/REPO",
+      "flow repo add OWNER/REPO",
     ].join("\n"));
   });
 

@@ -28,13 +28,14 @@ describe("deployment package", () => {
   it("documents the full operator path and GitHub App permissions", () => {
     const readme = readFileSync("README.md", "utf8");
 
-    expect(readme).toContain("flow-ai setup");
-    expect(readme).toContain("flow-ai repo add OWNER/REPO");
+    expect(readme).toContain("flow init");
+    expect(readme).toContain("flow host railway");
+    expect(readme).toContain("flow repo add OWNER/REPO");
     expect(readme).toContain("docker compose up -d --build");
     expect(readme).toContain("Workflow run");
     expect(readme).toContain("| Checks | Read and write |");
     expect(readme).toContain("human approval");
     expect(readme).toContain("One service handles many repositories");
-    expect(readme).toContain("fly volumes create flow_data");
+    expect(readme).toContain("one persistent volume mounted at `/data`");
   });
 });

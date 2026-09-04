@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { randomBytes } from "node:crypto";
 import { constants, realpathSync } from "node:fs";
 import { chmod, copyFile, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -46,6 +47,19 @@ const help = `Flow AI
   flow-ai doctor                Validate configuration and local storage
   flow-ai repo add [OWNER/REPO] Configure the current GitHub project, or an explicit repository`;
 
+const setEnvironmentValue = (
+  contents: string,
+  key: string,
+  value: string,
+  overwrite = false,
+): string => {
+  const pattern = new RegExp(`^${key}=(.*)$`, "m");
+  const match = contents.match(pattern);
+  if (!match) return `${contents.trimEnd()}\n${key}=${value}\n`;
+  if (!overwrite && match[1]?.trim()) return contents;
+  return contents.replace(pattern, `${key}=${value}`);
+};
+
 const setup = async (context: CliContext, agent?: string): Promise<number> => {
   if (agent && !["claude", "codex", "cursor"].includes(agent)) {
     throw new Error("--agent must be claude, codex, or cursor");
@@ -54,13 +68,14 @@ const setup = async (context: CliContext, agent?: string): Promise<number> => {
   try {
     await copyFile(context.envTemplatePath, destination, constants.COPYFILE_EXCL);
     await chmod(destination, 0o600);
-    if (agent) {
-      const template = await readFile(destination, "utf8");
-      const configured = /^FLOW_AGENT=.*$/m.test(template)
-        ? template.replace(/^FLOW_AGENT=.*$/m, `FLOW_AGENT=${agent}`)
-        : `${template.trimEnd()}\nFLOW_AGENT=${agent}\n`;
-      await writeFile(destination, configured);
+    let configured = await readFile(destination, "utf8");
+    for (const key of ["TELEGRAM_WEBHOOK_SECRET", "GITHUB_WEBHOOK_SECRET", "FLOW_ADMIN_PASSWORD"]) {
+      configured = setEnvironmentValue(configured, key, randomBytes(32).toString("base64url"));
     }
+    if (agent) {
+      configured = setEnvironmentValue(configured, "FLOW_AGENT", agent, true);
+    }
+    await writeFile(destination, configured);
     context.stdout(`Created ${destination}. Add the credential values, then run flow-ai doctor.`);
   } catch (error) {
     const code = typeof error === "object" && error !== null && "code" in error ? error.code : null;

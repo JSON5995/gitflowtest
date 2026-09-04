@@ -39,7 +39,11 @@ describe("Flow CLI", () => {
     };
 
     expect(await runCli(["setup"], context)).toBe(0);
-    expect(await readFile(join(directory, ".env"), "utf8")).toContain("flow.example.com");
+    const configured = await readFile(join(directory, ".env"), "utf8");
+    expect(configured).toContain("flow.example.com");
+    expect(configured).toMatch(/^TELEGRAM_WEBHOOK_SECRET=[A-Za-z0-9_-]{32,}$/m);
+    expect(configured).toMatch(/^GITHUB_WEBHOOK_SECRET=[A-Za-z0-9_-]{32,}$/m);
+    expect(configured).toMatch(/^FLOW_ADMIN_PASSWORD=[A-Za-z0-9_-]{32,}$/m);
     expect((await stat(join(directory, ".env"))).mode & 0o777).toBe(0o600);
     writeFileSync(join(directory, ".env"), "KEEP=me\n");
     expect(await runCli(["setup"], context)).toBe(0);

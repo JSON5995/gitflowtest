@@ -51,7 +51,7 @@ export const readCurrentGitHubRepository = async (
         "flow-ai repo add OWNER/REPO",
         "If origin is your fork, add the source project separately:",
         "git remote add upstream https://github.com/ORIGINAL_OWNER/REPO.git",
-      ].join("\n"));
+      ].join("\n"), { cause: error });
     }
     throw error;
   }

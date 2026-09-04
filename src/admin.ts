@@ -33,7 +33,7 @@ const FLOW_WRITE_PERMISSIONS = [
   "issues",
   "pull_requests",
   "secrets",
-  "variables",
+  "actions_variables",
   "workflows",
 ] as const;
 

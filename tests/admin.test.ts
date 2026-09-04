@@ -276,7 +276,7 @@ describe("admin console", () => {
   it("guides GitHub App installation with signed single-use state and a repository picker", async () => {
     const controlPlane = setupControlPlane();
     const writePermissions = Object.fromEntries([
-      "actions", "administration", "checks", "contents", "issues", "pull_requests", "secrets", "variables", "workflows",
+      "actions", "actions_variables", "administration", "checks", "contents", "issues", "pull_requests", "secrets", "workflows",
     ].map((permission) => [permission, "write"]));
     const access = {
       getInstallation: vi.fn(async (id: number) => ({

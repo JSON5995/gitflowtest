@@ -52,6 +52,35 @@ export type WorkRecord = {
   passedChecks: string[];
 };
 
+export type AdminWorkItem = {
+  repository: string;
+  state: FlowState;
+  issueNumber: number;
+  issueUrl: string | null;
+  pullRequestNumber: number | null;
+  pullRequestUrl: string | null;
+  fixRounds: number;
+  updatedAt: string;
+};
+
+export type AdminApprovalItem = Omit<AdminWorkItem, "state" | "fixRounds">;
+
+export type AdminSummary = {
+  generatedAt: string;
+  storageReady: boolean;
+  repositories: Array<{ repository: string; context: string; boundAt: string }>;
+  jobStates: Record<"pending" | "running" | "complete" | "failed", number>;
+  workStates: Record<FlowState, number>;
+  recentWork: AdminWorkItem[];
+  recentFailures: Array<{
+    source: "job" | "notification";
+    kind: string;
+    attempts: number;
+    failedAt: string;
+  }>;
+  awaitingApproval: AdminApprovalItem[];
+};
+
 type FailureOptions = {
   maxAttempts: number;
   jitterMs?: number;
@@ -108,6 +137,7 @@ export type Storage = {
   saveWork(work: WorkRecord, now?: number): void;
   getWorkByIssue(repository: string, issueNumber: number): WorkRecord | null;
   getWorkByPullRequest(repository: string, pullRequestNumber: number): WorkRecord | null;
+  getAdminSummary(now?: number): AdminSummary;
   isReady(): boolean;
   close(): void;
 };
@@ -161,6 +191,33 @@ type WorkRow = {
   repair_head_sha: string | null;
   passed_checks: string;
 };
+
+type AdminWorkRow = {
+  repository: string;
+  issue_number: number;
+  pull_request_number: number | null;
+  fix_rounds: number;
+  state: FlowState;
+  updated_at: number;
+};
+
+const githubRepositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+const githubWorkUrl = (
+  repository: string,
+  kind: "issues" | "pull",
+  number: number | null,
+): string | null =>
+  number !== null && githubRepositoryPattern.test(repository)
+    ? `https://github.com/${repository}/${kind}/${number}`
+    : null;
+
+const maskTelegramIdentifier = (value: string): string => {
+  const normalized = value.replace(/\W/g, "");
+  return normalized.length > 4 ? `…${normalized.slice(-4)}` : "…";
+};
+
+const toIsoDate = (timestamp: number): string => new Date(timestamp).toISOString();
 
 const migration = `
 CREATE TABLE IF NOT EXISTS chat_bindings (
@@ -632,6 +689,125 @@ export const openStorage = (path: string): Storage => {
         .prepare("SELECT * FROM work_links WHERE repository = ? AND pull_request_number = ?")
         .get(repository, pullRequestNumber) as WorkRow | undefined;
       return mapWork(row);
+    },
+
+    getAdminSummary(now = Date.now()) {
+      const repositories = database
+        .prepare(
+          `SELECT repository, chat_id, topic_id, created_at
+           FROM chat_bindings
+           ORDER BY repository, created_at DESC`,
+        )
+        .all() as Array<{
+          repository: string;
+          chat_id: string;
+          topic_id: string;
+          created_at: number;
+        }>;
+      const jobCounts = database
+        .prepare("SELECT status, COUNT(*) AS count FROM jobs GROUP BY status")
+        .all() as Array<{ status: string; count: number }>;
+      const workCounts = database
+        .prepare("SELECT state, COUNT(*) AS count FROM work_links GROUP BY state")
+        .all() as Array<{ state: string; count: number }>;
+      const recentWorkRows = database
+        .prepare(
+          `SELECT repository, issue_number, pull_request_number, fix_rounds, state, updated_at
+           FROM work_links
+           ORDER BY updated_at DESC
+           LIMIT 25`,
+        )
+        .all() as AdminWorkRow[];
+      const approvalRows = database
+        .prepare(
+          `SELECT repository, issue_number, pull_request_number, fix_rounds, state, updated_at
+           FROM work_links
+           WHERE state = 'human'
+           ORDER BY updated_at DESC
+           LIMIT 25`,
+        )
+        .all() as AdminWorkRow[];
+      const failureRows = database
+        .prepare(
+          `SELECT source, kind, attempts, updated_at
+           FROM (
+             SELECT 'job' AS source, kind, attempts, updated_at
+             FROM jobs WHERE status = 'failed'
+             UNION ALL
+             SELECT 'notification' AS source, 'delivery' AS kind, attempts, updated_at
+             FROM outbox WHERE status = 'failed'
+           )
+           ORDER BY updated_at DESC
+           LIMIT 10`,
+        )
+        .all() as Array<{
+          source: "job" | "notification";
+          kind: string;
+          attempts: number;
+          updated_at: number;
+        }>;
+      const jobStates: AdminSummary["jobStates"] = {
+        pending: 0,
+        running: 0,
+        complete: 0,
+        failed: 0,
+      };
+      for (const row of jobCounts) {
+        if (row.status in jobStates) jobStates[row.status as keyof typeof jobStates] = row.count;
+      }
+      const workStates: AdminSummary["workStates"] = {
+        inbox: 0,
+        ready: 0,
+        working: 0,
+        blocked: 0,
+        human: 0,
+        done: 0,
+      };
+      for (const row of workCounts) {
+        if (row.state in workStates) workStates[row.state as FlowState] = row.count;
+      }
+      const mapAdminWork = (row: AdminWorkRow): AdminWorkItem => ({
+        repository: row.repository,
+        state: row.state,
+        issueNumber: row.issue_number,
+        issueUrl: githubWorkUrl(row.repository, "issues", row.issue_number),
+        pullRequestNumber: row.pull_request_number,
+        pullRequestUrl: githubWorkUrl(row.repository, "pull", row.pull_request_number),
+        fixRounds: row.fix_rounds,
+        updatedAt: toIsoDate(row.updated_at),
+      });
+
+      return {
+        generatedAt: toIsoDate(now),
+        storageReady: open,
+        repositories: repositories.map((row) => ({
+          repository: row.repository,
+          context: `Telegram ${maskTelegramIdentifier(row.chat_id)}${
+            row.topic_id === "" ? "" : ` / topic ${maskTelegramIdentifier(row.topic_id)}`
+          }`,
+          boundAt: toIsoDate(row.created_at),
+        })),
+        jobStates,
+        workStates,
+        recentWork: recentWorkRows.map(mapAdminWork),
+        recentFailures: failureRows.map((row) => ({
+          source: row.source,
+          kind: row.kind,
+          attempts: row.attempts,
+          failedAt: toIsoDate(row.updated_at),
+        })),
+        awaitingApproval: approvalRows.map((row) => {
+          const work = mapAdminWork(row);
+          return {
+            repository: work.repository,
+            issueNumber: work.issueNumber,
+            issueUrl: work.issueUrl,
+            pullRequestNumber: work.pullRequestNumber,
+            pullRequestUrl: work.pullRequestUrl,
+            updatedAt: work.updatedAt,
+          };
+        }),
+      };
     },
 
     isReady() {

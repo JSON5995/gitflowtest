@@ -31,7 +31,14 @@ export const startApplication = async (config: AppConfig): Promise<RunningApplic
     getApi: appAccess.getApi,
   });
   const botLogin = `${await appAccess.getAppSlug()}[bot]`;
-  const server = buildServer({ isReady: storage.isReady });
+  const server = buildServer({
+    isReady: storage.isReady,
+    admin: {
+      username: config.admin.username,
+      password: config.admin.password,
+      getSummary: storage.getAdminSummary,
+    },
+  });
   registerTelegramRoutes(server, {
     storage,
     webhookSecret: config.telegram.webhookSecret,

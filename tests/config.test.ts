@@ -66,4 +66,9 @@ describe("loadConfig", () => {
   it("requires explicit GitHub users or teams for human approval", () => {
     expect(() => loadConfig(validEnv({ FLOW_CODEOWNERS: "platform-team" }))).toThrow(/FLOW_CODEOWNERS/);
   });
+
+  it("requires a strong admin console password", () => {
+    expect(() => loadConfig(validEnv({ FLOW_ADMIN_PASSWORD: undefined }))).toThrow(/FLOW_ADMIN_PASSWORD/);
+    expect(() => loadConfig(validEnv({ FLOW_ADMIN_PASSWORD: "short" }))).toThrow(/FLOW_ADMIN_PASSWORD/);
+  });
 });

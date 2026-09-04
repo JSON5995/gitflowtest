@@ -207,4 +207,60 @@ describe("storage", () => {
       passedChecks: [],
     });
   });
+
+  it("builds an operator summary without payloads or full Telegram identifiers", () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+    storage.bindChat("-100987654321", "777888999", 99, "acme/store", 1_000);
+    storage.enqueueJob("build", "issue:17", { token: "payload-secret", chatId: "-100987654321" }, 2_000);
+    const job = storage.claimJob(2_000, 1_000);
+    storage.failJob(job!.id, "credential=also-secret", 3_000, { maxAttempts: 1, jitterMs: 0 });
+    storage.linkWork({
+      repository: "acme/store",
+      issueNumber: 17,
+      chatId: "-100987654321",
+      topicId: "777888999",
+      pullRequestNumber: 12,
+      providerJobId: "provider-secret",
+      fixRounds: 1,
+      state: "human",
+      headSha: "private-sha",
+      repairHeadSha: null,
+      passedChecks: ["ci"],
+    }, 4_000);
+
+    const snapshot = (storage as unknown as { getAdminSummary(now: number): unknown }).getAdminSummary(5_000);
+    const serialized = JSON.stringify(snapshot);
+
+    expect(snapshot).toMatchObject({
+      generatedAt: "1970-01-01T00:00:05.000Z",
+      storageReady: true,
+      repositories: [
+        { repository: "acme/store", context: "Telegram …4321 / topic …8999" },
+      ],
+      jobStates: { pending: 0, running: 0, complete: 0, failed: 1 },
+      workStates: { inbox: 0, ready: 0, working: 0, blocked: 0, human: 1, done: 0 },
+      recentWork: [
+        {
+          repository: "acme/store",
+          state: "human",
+          issueUrl: "https://github.com/acme/store/issues/17",
+          pullRequestUrl: "https://github.com/acme/store/pull/12",
+        },
+      ],
+      recentFailures: [{ source: "job", kind: "build", attempts: 1 }],
+      awaitingApproval: [
+        {
+          repository: "acme/store",
+          issueUrl: "https://github.com/acme/store/issues/17",
+          pullRequestUrl: "https://github.com/acme/store/pull/12",
+        },
+      ],
+    });
+    expect(serialized).not.toContain("payload-secret");
+    expect(serialized).not.toContain("also-secret");
+    expect(serialized).not.toContain("-100987654321");
+    expect(serialized).not.toContain("provider-secret");
+    expect(serialized).not.toContain("private-sha");
+  });
 });

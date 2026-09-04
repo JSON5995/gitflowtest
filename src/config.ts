@@ -31,6 +31,8 @@ const EnvironmentSchema = z
     FLOW_REVIEWER: ProviderSchema.default("claude"),
     FLOW_CODEOWNERS: z.string().min(1),
     FLOW_MAX_FIX_ROUNDS: z.coerce.number().int().min(0).max(5).default(2),
+    FLOW_ADMIN_USERNAME: z.string().min(1).max(64).default("flow"),
+    FLOW_ADMIN_PASSWORD: z.string().min(16),
   })
   .superRefine((value, context) => {
     if (value.NODE_ENV !== "test" && !value.PUBLIC_URL.startsWith("https://")) {
@@ -90,6 +92,7 @@ export type AppConfig = {
     codeowners: string[];
     maxFixRounds: number;
   };
+  admin: { username: string; password: string };
 };
 
 export const loadConfig = (env: Record<string, string | undefined>): AppConfig => {
@@ -125,6 +128,10 @@ export const loadConfig = (env: Record<string, string | undefined>): AppConfig =
       qa: value.FLOW_AGENT ?? reviewer,
       codeowners: value.FLOW_CODEOWNERS.split(/[\s,]+/).filter(Boolean),
       maxFixRounds: value.FLOW_MAX_FIX_ROUNDS,
+    },
+    admin: {
+      username: value.FLOW_ADMIN_USERNAME,
+      password: value.FLOW_ADMIN_PASSWORD,
     },
   };
 };

@@ -16,5 +16,7 @@ export const validEnv = (overrides: Record<string, string | undefined> = {}) => 
   FLOW_CODEOWNERS: "@acme/platform,@release-owner",
   FLOW_AGENT: undefined,
   FLOW_MAX_FIX_ROUNDS: "2",
+  FLOW_ADMIN_USERNAME: "operator",
+  FLOW_ADMIN_PASSWORD: "a-strong-test-password",
   ...overrides,
 });

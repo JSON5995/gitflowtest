@@ -8,7 +8,7 @@ services:
     environment:
       DATABASE_PATH: /data/flow.db
     ports:
-      - "${PORT:-3000}:${PORT:-3000}"
+      - "127.0.0.1:${PORT:-3000}:${PORT:-3000}"
     volumes:
       - flow-data:/data
     healthcheck:

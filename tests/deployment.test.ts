@@ -17,6 +17,7 @@ describe("deployment package", () => {
     expect(service).toHaveProperty("healthcheck");
     expect(service).not.toHaveProperty("privileged");
     expect(JSON.stringify(service.volumes)).toContain("flow-data:/data");
+    expect(JSON.stringify(service.ports)).toContain("127.0.0.1");
     expect(compose.volumes).toHaveProperty("flow-data");
   });
 
@@ -29,5 +30,7 @@ describe("deployment package", () => {
     expect(readme).toContain("Workflow run");
     expect(readme).toContain("| Checks | Read and write |");
     expect(readme).toContain("human approval");
+    expect(readme).toContain("One service handles many repositories");
+    expect(readme).toContain("fly volumes create flow_data");
   });
 });

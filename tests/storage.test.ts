@@ -117,6 +117,19 @@ describe("storage", () => {
     expect(storage.getChatBinding("-100", null)).toBeNull();
   });
 
+  it("isolates multiple repository bindings in one hosted service", () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+
+    storage.bindChat("-100", "web", 11, "acme/web", 1_000);
+    storage.bindChat("-100", "api", 12, "acme/api", 1_001);
+    storage.bindChat("-200", null, 13, "acme/mobile", 1_002);
+
+    expect(storage.getChatBinding("-100", "web")?.repository).toBe("acme/web");
+    expect(storage.getChatBinding("-100", "api")?.repository).toBe("acme/api");
+    expect(storage.getChatBinding("-200", null)?.repository).toBe("acme/mobile");
+  });
+
   it("collects an open draft and closes it on submission", () => {
     const storage = openStorage(":memory:");
     storages.push(storage);

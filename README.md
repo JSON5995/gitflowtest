@@ -42,6 +42,33 @@ Send feedback, screenshots, voice notes, or a screen recording, followed by:
 
 Flow AI handles the delivery cycle and leaves the resulting PR ready for human approval.
 
+## One service handles many repositories
+
+You do **not** deploy Flow AI once per repository. Deploy one central Flow AI service for a company or trusted team, then connect as many repositories as that service's GitHub App is allowed to access.
+
+Keep Flow AI itself in one dedicated private operations repository and host that repository once. Target application repositories receive only the small `.flow/`, `.github/workflows/`, and guidance files installed by the CLI; they do not run another copy of the service.
+
+```text
+One hosted Flow AI service
+├── Telegram topic: Web app  → acme/web
+├── Telegram topic: API      → acme/api
+├── Telegram topic: Mobile   → acme/mobile
+└── Telegram group: Internal → acme/internal-tools
+```
+
+Repository isolation is carried through the entire system:
+
+- Each Telegram group/topic has its own repository binding.
+- Every draft stores the repository selected when it is submitted.
+- Durable jobs and work records are keyed by repository and issue number.
+- The GitHub App resolves the correct installation for every repository.
+- Every repository gets its own Actions secrets, workflows, branches, issues, checks, and merge rules.
+- Building and QA run in that repository's GitHub Actions account, not on the central Flow AI host.
+
+The recommended Telegram layout is one business group with Topics enabled and one topic per repository or product. Run `/connect OWNER/REPO` once inside each topic. A topic can be reconnected later, but finish or cancel any open draft before changing its repository.
+
+One instance is appropriate for repositories that share the same trusted operators and provider credentials. `TELEGRAM_ADMIN_IDS` is currently a global allowlist, so every listed operator can connect a Telegram destination to any repository accessible to the GitHub App. Use a separate Flow AI instance per customer or security boundary when that is not acceptable. This version is multi-repository, not a public multi-tenant SaaS control plane.
+
 ## What is automated
 
 `flow-ai repo add` handles the repository-side setup:
@@ -193,16 +220,122 @@ Validate the configuration:
 flow-ai doctor
 ```
 
-## 4. Run the service
+## 4. Host the central service
 
-From the Flow AI installation directory:
+The central service must be continuously reachable over HTTPS because Telegram and GitHub send webhooks to it. It also needs one persistent writable directory at `/data` for SQLite. It does not need to clone or build every connected repository; GitHub Actions supplies the build compute.
+
+### Recommended: Fly.io
+
+Fly.io is the simplest fit for the current architecture: it deploys the included Dockerfile, gives the service a public HTTPS address, and supports a persistent volume mounted at `/data`. Keep exactly one Machine while the service uses SQLite. See Fly's official [Dockerfile deployment](https://fly.io/docs/languages-and-frameworks/dockerfile/), [volume](https://fly.io/docs/volumes/overview/), and [configuration](https://fly.io/docs/reference/configuration/) documentation.
+
+Install and authenticate `flyctl`, then run this from the Flow AI repository:
+
+```sh
+fly auth login
+fly launch --no-deploy
+```
+
+Choose a unique app name and a region near your team. Update the generated `fly.toml` so it contains these settings, while retaining its generated `app` and `primary_region` values:
+
+```toml
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  DATABASE_PATH = "/data/flow.db"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  timeout = "5s"
+  path = "/health/ready"
+
+[[mounts]]
+  source = "flow_data"
+  destination = "/data"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+```
+
+Create the volume in the same region as the app:
+
+```sh
+fly volumes create flow_data --region YOUR_REGION --size 1
+```
+
+Set `PUBLIC_URL` in your local `.env` to the generated address:
+
+```dotenv
+PUBLIC_URL=https://YOUR-APP.fly.dev
+```
+
+Import the configuration into Fly's encrypted secret store, override the hosted database path, deploy, and keep one Machine:
+
+```sh
+fly secrets import < .env
+fly secrets set DATABASE_PATH=/data/flow.db
+fly deploy
+fly scale count 1
+```
+
+Fly documents that app secrets are encrypted and exposed as environment variables only at runtime. Updating a secret restarts the Machine. See [Fly secrets](https://fly.io/docs/apps/secrets/).
+
+Verify the deployment:
+
+```sh
+curl https://YOUR-APP.fly.dev/health/live
+curl https://YOUR-APP.fly.dev/health/ready
+fly logs
+```
+
+Finally, set the GitHub App webhook URL to:
+
+```text
+https://YOUR-APP.fly.dev/webhooks/github
+```
+
+The service automatically registers the corresponding Telegram webhook when it starts.
+
+### Alternative: a small VPS
+
+A small Ubuntu/Debian VM with Docker is the most predictable option when you already operate servers. Clone Flow AI once, keep `.env` on that server, and run:
 
 ```sh
 docker compose up -d --build
 docker compose ps
 ```
 
-Route your public HTTPS address to port 3000. Keep the `flow-data` Docker volume: it contains the durable SQLite queue, feedback drafts, and GitHub work links.
+The Compose file binds port 3000 to localhost only. Put Caddy, nginx, Traefik, or your existing load balancer in front of it and terminate HTTPS there. Persist and back up the `flow-data` Docker volume. Open only ports 80 and 443 publicly.
+
+### Alternative: Render
+
+Create one paid Docker Web Service from this repository, add the `.env` values in Render's environment settings, attach a persistent disk at `/data`, set `DATABASE_PATH=/data/flow.db`, and configure `/health/ready` as the health endpoint. Keep the service at one instance. Render's default filesystem is ephemeral; only an attached persistent disk survives redeploys. See Render's [Docker](https://render.com/docs/docker) and [persistent disk](https://render.com/docs/disks) documentation.
+
+Do not deploy this SQLite version to a stateless function platform or scale it horizontally. Moving to multiple service replicas requires replacing SQLite with shared transactional storage and queue leasing.
+
+### Local-only development
+
+For development, the same Compose command is enough:
+
+```sh
+docker compose up -d --build
+docker compose ps
+```
+
+Use an HTTPS tunnel only for temporary webhook testing. A sleeping laptop is not a production host.
 
 Health endpoints:
 
@@ -211,7 +344,7 @@ GET /health/live
 GET /health/ready
 ```
 
-The service registers its Telegram webhook at startup. The GitHub App webhook URL is configured in GitHub.
+The GitHub CLI is needed on the administrator's computer for `flow-ai repo add`; it is not needed inside the hosted runtime container.
 
 ## 5. Add a project from its own folder
 
@@ -241,6 +374,38 @@ The CLI prints one of two outcomes:
 2. Existing repository protection requires human approval. Open the printed setup PR, approve and merge it, then run `flow-ai repo add` again. The second run activates the merge gate.
 
 This process does not modify the target's local working tree and does not push application feature code from your computer. Repository installation happens through GitHub's API and the reviewable setup branch.
+
+### Add several repositories to the same service
+
+Repeat the repository command for each project. Do not create another Flow AI deployment:
+
+```sh
+cd /work/acme-web
+flow-ai repo add
+
+cd /work/acme-api
+flow-ai repo add
+
+cd /work/acme-mobile
+flow-ai repo add
+```
+
+Install the same private GitHub App on all three repositories. The CLI stores provider credentials and workflows separately in each repository, while all webhook events return to the one central `PUBLIC_URL`.
+
+Then bind Telegram destinations independently:
+
+```text
+# In the Web topic
+/connect acme/web
+
+# In the API topic
+/connect acme/api
+
+# In the Mobile topic
+/connect acme/mobile
+```
+
+The same Telegram group can therefore drive several repositories without mixing drafts, issues, branches, or PR state.
 
 ## 6. Use it from Telegram
 
@@ -388,7 +553,7 @@ Mock tests remain useful, but they supplement rather than replace the live appli
 - Review changes to pinned GitHub Actions and exact Playwright/Stagehand versions.
 - Telegram's hosted Bot API limits bot downloads to 20 MB. Use Telegram's local Bot API server if larger recordings are required.
 - Cursor's headless CLI is a vendor beta and its installer currently tracks the latest release. Treat Cursor upgrades as reviewed dependency changes.
-- Run one service replica per SQLite volume. Horizontal scaling requires replacing SQLite with a shared transactional queue.
+- Run one central service replica per company/security boundary. That replica can handle many repositories. Horizontal service scaling requires replacing SQLite with a shared transactional queue.
 
 ## Troubleshooting
 

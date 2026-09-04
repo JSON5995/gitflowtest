@@ -6,7 +6,7 @@ export type FlowState = (typeof FLOW_STATES)[number];
 export type FeedbackItem =
   | { kind: "text"; text: string }
   | {
-      kind: "photo" | "document" | "voice";
+      kind: "photo" | "document" | "voice" | "video";
       fileId: string;
       mimeType?: string;
       caption?: string;

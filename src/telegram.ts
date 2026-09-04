@@ -24,6 +24,8 @@ const MessageSchema = z.object({
   caption: z.string().optional(),
   photo: z.array(PhotoSchema).optional(),
   voice: FileSchema.optional(),
+  video: FileSchema.optional(),
+  video_note: FileSchema.optional(),
   document: FileSchema.optional(),
 });
 
@@ -100,6 +102,17 @@ export const parseTelegramUpdate = (input: unknown): ParsedTelegramUpdate | null
         type: "append",
         item: { kind: "voice", fileId: message.voice.file_id, ...optionalFileFields(message.voice) },
       };
+    } else if (message.video ?? message.video_note) {
+      const video = message.video ?? message.video_note!;
+      action = {
+        type: "append",
+        item: {
+          kind: "video",
+          fileId: video.file_id,
+          ...optionalFileFields(video),
+          ...(message.caption === undefined ? {} : { caption: message.caption }),
+        },
+      };
     } else if (message.document) {
       action = {
         type: "append",
@@ -153,8 +166,9 @@ export const verifyTelegramSecret = (received: string | undefined, expected: str
 };
 
 export type TelegramRouteDependencies = {
-  storage: Pick<Storage, "recordWebhook" | "enqueueJob">;
+  storage: Pick<Storage, "recordWebhookJob">;
   webhookSecret: string;
+  allowedUserIds: string[];
 };
 
 export const registerTelegramRoutes = (
@@ -170,17 +184,21 @@ export const registerTelegramRoutes = (
 
     const update = parseTelegramUpdate(request.body);
     if (!update) return reply.code(200).send({ ok: true, ignored: true });
+    if (!dependencies.allowedUserIds.includes(update.userId)) {
+      return reply.code(200).send({ ok: true, ignored: true });
+    }
     const serialized = JSON.stringify(request.body);
     const hash = createHash("sha256").update(serialized).digest("hex");
-    if (!dependencies.storage.recordWebhook("telegram", update.updateId, hash)) {
-      return reply.code(200).send({ ok: true, duplicate: true });
-    }
-
-    dependencies.storage.enqueueJob(
+    if (!dependencies.storage.recordWebhookJob(
+      "telegram",
+      update.updateId,
+      hash,
       "telegram",
       `telegram:${update.updateId}`,
       update,
-    );
+    )) {
+      return reply.code(200).send({ ok: true, duplicate: true });
+    }
     return reply.code(200).send({ ok: true });
   });
 };

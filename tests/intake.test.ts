@@ -71,6 +71,17 @@ describe("intake planning", () => {
     expect(plan.risks).toContain("High-risk area detected in submitted feedback.");
   });
 
+  it("forces human input when visual analysis surfaces a high-risk area", async () => {
+    const model = { createPlan: async () => validPlan({ problem: "The screenshot shows the production billing form failing." }) };
+
+    const plan = await buildWorkPlan(bundle("Screenshot attached"), {}, model, {
+      text: "Screenshot attached",
+      images: ["data:image/png;base64,c2NyZWVu"],
+    });
+
+    expect(plan.needsHumanInput).toBe(true);
+  });
+
   it("makes exactly one schema-repair attempt", async () => {
     let calls = 0;
     const model = {
@@ -119,6 +130,7 @@ describe("feedback preparation", () => {
     await expect(prepareFeedback(oversized, {
       downloadFile: async () => ({ bytes: Buffer.alloc(0), mimeType: "application/octet-stream" }),
       transcribe: async () => "",
+      analyzeVideo: async () => ({ transcript: "", images: [] }),
     })).rejects.toThrow(/20 MB/);
   });
 
@@ -137,10 +149,30 @@ describe("feedback preparation", () => {
         mimeType: fileId === "voice" ? "audio/ogg" : "image/jpeg",
       }),
       transcribe: async () => "Checkout fails after I tap pay.",
+      analyzeVideo: async () => ({ transcript: "", images: [] }),
     });
 
     expect(prepared.text).toContain("Checkout fails after I tap pay.");
     expect(prepared.images).toEqual(["data:image/jpeg;base64,cGhvdG8="]);
+  });
+
+  it("adds a recording transcript and sampled visual frames to the planning evidence", async () => {
+    const recording: FeedbackBundle = {
+      ...bundle("Recording"),
+      items: [{ kind: "video", fileId: "recording", mimeType: "video/mp4" }],
+    };
+
+    const prepared = await prepareFeedback(recording, {
+      downloadFile: async () => ({ bytes: Buffer.from("video"), mimeType: "video/mp4" }),
+      transcribe: async () => "",
+      analyzeVideo: async () => ({
+        transcript: "I tap Save, but no row appears.",
+        images: ["data:image/jpeg;base64,ZnJhbWU="],
+      }),
+    });
+
+    expect(prepared.text).toContain("I tap Save, but no row appears.");
+    expect(prepared.images).toEqual(["data:image/jpeg;base64,ZnJhbWU="]);
   });
 });
 
@@ -148,12 +180,13 @@ describe("issue formatting", () => {
   it("renders stable sections and escapes user-authored HTML", () => {
     const body = formatIssueBody(
       validPlan({ problem: "Button shows <script>alert(1)</script>" }),
-      { chatId: "-100", topicId: "77", userId: "123", messageIds: [1, 2] },
     );
 
     expect(body).toContain("## Problem");
     expect(body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
-    expect(body).toContain("Telegram messages: 1, 2");
+    expect(body).toContain("Recorded privately by Flow AI");
+    expect(body).not.toContain("Telegram chat");
+    expect(body).not.toContain("-100");
     expect(body).not.toContain("<script>");
   });
 });

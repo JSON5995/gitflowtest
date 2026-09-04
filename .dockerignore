@@ -1,0 +1,10 @@
+.git
+.env
+.superpowers
+coverage
+data
+dist
+node_modules
+*.db
+*.db-shm
+*.db-wal

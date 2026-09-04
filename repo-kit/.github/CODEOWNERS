@@ -1,0 +1,6 @@
+# BEGIN Flow AI required human reviewers
+* {{FLOW_CODEOWNERS}}
+.github/CODEOWNERS {{FLOW_CODEOWNERS}}
+.github/workflows/ {{FLOW_CODEOWNERS}}
+.flow/ {{FLOW_CODEOWNERS}}
+# END Flow AI required human reviewers

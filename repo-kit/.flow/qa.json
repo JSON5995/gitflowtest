@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "baseUrl": "http://127.0.0.1:3000",
+  "apiProbes": [
+    {
+      "name": "application root",
+      "method": "GET",
+      "path": "/",
+      "status": 200
+    }
+  ],
+  "viewports": [
+    { "name": "mobile", "width": 390, "height": 844 },
+    { "name": "desktop", "width": 1440, "height": 900 }
+  ],
+  "journeys": [
+    {
+      "name": "application smoke",
+      "startPath": "/",
+      "actions": [],
+      "assertions": [
+        { "type": "visible", "selector": "body" }
+      ]
+    }
+  ],
+  "design": {
+    "allowedFonts": ["system-ui", "sans-serif", "serif", "monospace", "Arial", "Helvetica", "Times New Roman", "Segoe UI", "Roboto"],
+    "requiredCssVariables": [],
+    "minInteractiveSize": 24
+  }
+}

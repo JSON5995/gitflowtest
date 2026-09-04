@@ -7,11 +7,22 @@
     ["npm", "test"],
     ["npm", "run", "build"]
   ],
-  "qa": [["npm", "test"]],
-  "maxParallelBuilds": 2,
+  "qa": [
+    ["npm", "test"],
+    ["npm", "run", "build"]
+  ],
+  "start": ["npm", "run", "start", "--", "--port", "3000"],
+  "healthUrl": "http://127.0.0.1:3000/",
   "protectedPaths": [
     ".github/workflows/",
+    ".github/CODEOWNERS",
     "migrations/",
-    ".flow/"
+    ".flow/",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "scripts/run-contract.mjs",
+    "scripts/check-review.mjs",
+    "scripts/parse-cursor-result.mjs",
+    "scripts/run-real-qa.mjs"
   ]
 }

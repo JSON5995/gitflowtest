@@ -47,6 +47,8 @@ describe("GitHub gateway", () => {
     const api: GitHubApi = {
       request: async (route, parameters) => {
         calls.push({ route, parameters });
+        if (route === "GET /repos/{owner}/{repo}/issues") return { data: [] };
+        if (route === "GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues") return { data: [] };
         if (route === "POST /repos/{owner}/{repo}/issues") {
           const number = nextNumber++;
           return { data: { id: number + 1000, number, html_url: `https://github.test/issues/${number}` } };
@@ -69,7 +71,43 @@ describe("GitHub gateway", () => {
 
     expect(result).toEqual({ parentNumber: 10, childNumbers: [11, 12] });
     expect(calls.filter((call) => call.route === "POST /repos/{owner}/{repo}/issues")).toHaveLength(3);
-    expect(calls.filter((call) => call.route.includes("sub_issues"))).toHaveLength(2);
+    expect(calls.filter((call) => call.route === "POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues")).toHaveLength(2);
+  });
+
+  it("reconciles an already-created request instead of duplicating issues", async () => {
+    const calls: Array<{ route: string; parameters: Record<string, unknown> }> = [];
+    let listed = false;
+    const gateway = createGitHubGateway({
+      webhookSecret: "secret",
+      getInstallationId: async () => 99,
+      getApi: async () => ({
+        request: async (route, parameters) => {
+          calls.push({ route, parameters });
+          if (route === "GET /repos/{owner}/{repo}/issues") {
+            if (!listed) {
+              listed = true;
+              return { data: [] };
+            }
+            const bodies = calls
+              .filter((call) => call.route === "POST /repos/{owner}/{repo}/issues")
+              .map((call, index) => ({ id: 1_010 + index, number: 10 + index, html_url: `https://github.test/issues/${10 + index}`, body: call.parameters.body }));
+            return { data: bodies };
+          }
+          if (route === "POST /repos/{owner}/{repo}/issues") {
+            const number = 10 + calls.filter((call) => call.route === route).length - 1;
+            return { data: { id: 1_000 + number, number, html_url: `https://github.test/issues/${number}` } };
+          }
+          if (route === "GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues") return { data: [] };
+          return { data: {} };
+        },
+      }),
+    });
+    const source = { chatId: "-100", topicId: null, userId: "123", messageIds: [1] };
+
+    await gateway.createPlannedIssue("acme/store", plan, source);
+    await gateway.createPlannedIssue("acme/store", plan, source);
+
+    expect(calls.filter((call) => call.route === "POST /repos/{owner}/{repo}/issues")).toHaveLength(3);
   });
 
   it("keeps non-flow labels when changing state", async () => {
@@ -94,6 +132,130 @@ describe("GitHub gateway", () => {
     await gateway.setFlowState("acme/store", 10, "working");
 
     expect(updatedLabels).toEqual(["bug", "customer", "flow:working"]);
+  });
+
+  it("dispatches independent review and QA workflows for a pull request", async () => {
+    const calls: Array<{ route: string; parameters: Record<string, unknown> }> = [];
+    const gateway = createGitHubGateway({
+      webhookSecret: "secret",
+      getInstallationId: async () => 99,
+      getApi: async () => ({
+        request: async (route, parameters) => {
+          calls.push({ route, parameters });
+          if (route === "GET /repos/{owner}/{repo}") return { data: { default_branch: "main" } };
+          return { data: {} };
+        },
+      }),
+    });
+
+    await gateway.dispatchQuality("acme/store", 22, "a".repeat(40));
+
+    const dispatches = calls.filter((call) => call.route.includes("/dispatches"));
+    expect(dispatches.map((call) => call.parameters.workflow_id)).toEqual([
+      "flow-ci.yml",
+      "flow-review.yml",
+      "flow-qa.yml",
+    ]);
+    expect(dispatches.every((call) => (call.parameters.inputs as { pr_number: string }).pr_number === "22")).toBe(true);
+    expect(dispatches.every((call) => (call.parameters.inputs as { head_sha: string }).head_sha === "a".repeat(40))).toBe(true);
+  });
+
+  it("accepts only an active workflow run from the default branch history", async () => {
+    const current = "c".repeat(40);
+    const dispatched = "b".repeat(40);
+    const gateway = createGitHubGateway({
+      webhookSecret: "secret",
+      getInstallationId: async () => 99,
+      getApi: async () => ({
+        request: async (route) => {
+          if (route === "GET /repos/{owner}/{repo}") return { data: { default_branch: "main" } };
+          if (route === "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}") {
+            return { data: { id: 201, path: ".github/workflows/flow-ci.yml", state: "active" } };
+          }
+          if (route === "GET /repos/{owner}/{repo}/git/ref/heads/{ref}") {
+            return { data: { object: { sha: current } } };
+          }
+          if (route === "GET /repos/{owner}/{repo}/compare/{basehead}") return { data: { status: "ahead" } };
+          return { data: {} };
+        },
+      }),
+    });
+    const trusted = {
+      workflowId: 201,
+      path: ".github/workflows/flow-ci.yml",
+      headBranch: "main",
+      headSha: dispatched,
+    };
+
+    expect(await gateway.verifyTrustedWorkflow("acme/store", trusted)).toBe(true);
+    expect(await gateway.verifyTrustedWorkflow("acme/store", { ...trusted, headBranch: "attacker" })).toBe(false);
+    expect(await gateway.verifyTrustedWorkflow("acme/store", { ...trusted, path: ".github/workflows/other.yml" })).toBe(false);
+  });
+
+  it("marks the draft pull request ready for human approval", async () => {
+    const calls: Array<{ route: string; parameters: Record<string, unknown> }> = [];
+    const gateway = createGitHubGateway({
+      webhookSecret: "secret",
+      getInstallationId: async () => 99,
+      getApi: async () => ({ request: async (route, parameters) => { calls.push({ route, parameters }); return { data: {} }; } }),
+    });
+
+    await gateway.markPullRequestReady("acme/store", 22);
+
+    expect(calls[0]?.route).toBe("POST /repos/{owner}/{repo}/pulls/{pull_number}/ready_for_review");
+  });
+
+  it("publishes a trusted status check on the pull request head", async () => {
+    const calls: Array<{ route: string; parameters: Record<string, unknown> }> = [];
+    const gateway = createGitHubGateway({
+      webhookSecret: "secret",
+      getInstallationId: async () => 99,
+      getApi: async () => ({
+        request: async (route, parameters) => {
+          calls.push({ route, parameters });
+          return { data: {} };
+        },
+      }),
+    });
+
+    await gateway.publishCheck("acme/store", {
+      name: "qa",
+      headSha: "abc",
+      conclusion: "success",
+      summary: "Flow QA passed.",
+      detailsUrl: "https://github.com/acme/store/actions/runs/1",
+      externalId: "flow:1",
+    });
+
+    expect(calls[0]).toMatchObject({
+      route: "POST /repos/{owner}/{repo}/check-runs",
+      parameters: { name: "qa", head_sha: "abc", status: "completed", conclusion: "success" },
+    });
+  });
+
+  it("opens one draft pull request for a completed issue branch", async () => {
+    const calls: Array<{ route: string; parameters: Record<string, unknown> }> = [];
+    const gateway = createGitHubGateway({
+      webhookSecret: "secret",
+      getInstallationId: async () => 99,
+      getApi: async () => ({
+        request: async (route, parameters) => {
+          calls.push({ route, parameters });
+          if (route === "GET /repos/{owner}/{repo}") return { data: { default_branch: "main" } };
+          if (route === "GET /repos/{owner}/{repo}/pulls") return { data: [] };
+          if (route === "POST /repos/{owner}/{repo}/pulls") return { data: { number: 22 } };
+          return { data: {} };
+        },
+      }),
+    });
+
+    expect(await gateway.openPullRequest("acme/store", 17)).toBe(22);
+    expect(calls.find((call) => call.route === "POST /repos/{owner}/{repo}/pulls")?.parameters).toMatchObject({
+      head: "flow/17",
+      base: "main",
+      draft: true,
+      body: expect.stringContaining("Closes #17"),
+    });
   });
 });
 

@@ -13,7 +13,8 @@ export const validEnv = (overrides: Record<string, string | undefined> = {}) => 
   ANTHROPIC_API_KEY: "anthropic-test-key",
   FLOW_BUILDER: "codex",
   FLOW_REVIEWER: "claude",
-  FLOW_MAX_ISSUE_COST_USD: "25",
+  FLOW_CODEOWNERS: "@acme/platform,@release-owner",
+  FLOW_AGENT: undefined,
   FLOW_MAX_FIX_ROUNDS: "2",
   ...overrides,
 });

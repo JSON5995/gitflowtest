@@ -23,6 +23,15 @@ describe("storage", () => {
     expect(storage.recordWebhook("telegram", "101", "hash-a")).toBe(false);
   });
 
+  it("records a webhook receipt and its durable job atomically", () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+
+    expect(storage.recordWebhookJob("telegram", "101", "hash-a", "telegram", "telegram:101", { updateId: "101" }, 1_000)).toBe(true);
+    expect(storage.recordWebhookJob("telegram", "101", "hash-a", "telegram", "telegram:101", { updateId: "101" }, 1_001)).toBe(false);
+    expect(storage.claimJob(1_000, 1_000)?.payload).toEqual({ updateId: "101" });
+  });
+
   it("reclaims a job whose lease expired", () => {
     const storage = openStorage(":memory:");
     storages.push(storage);
@@ -55,6 +64,22 @@ describe("storage", () => {
     expect(storage.enqueueNotification("ready:repo:9", "-100", null, "Ready", 10)).toBe(true);
     expect(storage.enqueueNotification("ready:repo:9", "-100", null, "Ready again", 11)).toBe(false);
     expect(storage.claimNotification(10, 1_000)?.text).toBe("Ready");
+  });
+
+  it("backs off a failed notification and retries it", () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+    storage.enqueueNotification("ready:repo:10", "-100", null, "Ready", 0);
+    const notification = storage.claimNotification(0, 1_000);
+    expect(notification).not.toBeNull();
+
+    storage.failNotification(notification!.id, "rate limited", 100, {
+      maxAttempts: 3,
+      jitterMs: 0,
+    });
+
+    expect(storage.claimNotification(2_099, 1_000)).toBeNull();
+    expect(storage.claimNotification(2_100, 1_000)?.attempts).toBe(1);
   });
 
   it("backs off a transient failure without losing the payload", () => {
@@ -104,8 +129,9 @@ describe("storage", () => {
       items: [{ kind: "text", text: "Fix checkout" }],
     });
 
-    storage.closeDraft(draftId, "submitted");
+    storage.closeDraft(draftId, "submitted", "update-9");
     expect(storage.getOpenDraft("-100", null, "123", 1_003)).toBeNull();
+    expect(storage.getDraftBySubmission("update-9")).toMatchObject({ id: draftId, messageIds: [7] });
   });
 
   it("links chat work to an issue and pull request", () => {
@@ -121,12 +147,14 @@ describe("storage", () => {
       fixRounds: 0,
       state: "ready",
       headSha: null,
+      repairHeadSha: null,
       passedChecks: [],
     }, 1_000);
     const linked = {
       ...storage.getWorkByIssue("acme/store", 17)!,
       pullRequestNumber: 12,
       headSha: "abc",
+      repairHeadSha: null,
       passedChecks: ["ci"],
     };
     storage.saveWork(linked, 2_000);
@@ -162,6 +190,7 @@ describe("storage", () => {
     expect(storage.getWorkByIssue("acme/store", 17)).toMatchObject({
       state: "ready",
       headSha: null,
+      repairHeadSha: null,
       passedChecks: [],
     });
   });

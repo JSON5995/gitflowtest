@@ -1,7 +1,7 @@
 import type { FeedbackBundle, FlowState, Provider, WorkPlan } from "./domain.js";
 import { buildWorkPlan, prepareFeedback, type IntakeModel } from "./intake.js";
 import type { PlannedIssueResult } from "./github.js";
-import type { Storage } from "./storage.js";
+import type { Storage, WorkRecord } from "./storage.js";
 import type { ParsedTelegramUpdate, TelegramClient } from "./telegram.js";
 
 export type RequiredCheck = "ci" | "ai-review" | "qa";
@@ -10,6 +10,7 @@ export type WorkSnapshot = {
   state: FlowState;
   fixRounds: number;
   headSha: string | null;
+  repairHeadSha: string | null;
   passedChecks: string[];
 };
 
@@ -22,6 +23,7 @@ export type WorkEvent =
 export type OrchestrationCommand =
   | { type: "request_fix"; summary: string; attempt: number }
   | { type: "set_state"; state: FlowState }
+  | { type: "mark_ready" }
   | { type: "notify"; message: string }
   | { type: "close_issue" };
 
@@ -37,16 +39,30 @@ export const transition = (
   event: WorkEvent,
   maxFixRounds: number,
 ): TransitionResult => {
-  if ("headSha" in event && work.headSha !== null && event.headSha !== work.headSha) {
+  if (work.state === "done") return { work, commands: [] };
+
+  if (event.type === "pr_opened") {
+    if (work.headSha === event.headSha) return { work, commands: [] };
+    return {
+      work: {
+        ...work,
+        state: "working",
+        headSha: event.headSha,
+        repairHeadSha: null,
+        passedChecks: [],
+      },
+      commands: [
+        { type: "set_state", state: "working" },
+        { type: "notify", message: `Pull request #${event.pullRequestNumber} opened.` },
+      ],
+    };
+  }
+
+  if ("headSha" in event && work.headSha !== event.headSha) {
     return { work, commands: [] };
   }
 
-  if (event.type === "pr_opened") {
-    return {
-      work: { ...work, state: "working", headSha: event.headSha, passedChecks: [] },
-      commands: [{ type: "notify", message: `Pull request #${event.pullRequestNumber} opened.` }],
-    };
-  }
+  if (event.type !== "merged" && work.state !== "working") return { work, commands: [] };
 
   if (event.type === "check_passed") {
     const passedChecks = [...new Set([...work.passedChecks, event.name])];
@@ -55,6 +71,7 @@ export const transition = (
         work: { ...work, state: "human", passedChecks },
         commands: [
           { type: "set_state", state: "human" },
+          { type: "mark_ready" },
           { type: "notify", message: "All checks passed. Ready for human approval." },
         ],
       };
@@ -63,10 +80,17 @@ export const transition = (
   }
 
   if (event.type === "check_failed") {
+    if (work.repairHeadSha === event.headSha) return { work, commands: [] };
     if (work.fixRounds < maxFixRounds) {
       const attempt = work.fixRounds + 1;
       return {
-        work: { ...work, state: "working", fixRounds: attempt, passedChecks: [] },
+        work: {
+          ...work,
+          state: "working",
+          fixRounds: attempt,
+          repairHeadSha: event.headSha,
+          passedChecks: [],
+        },
         commands: [
           { type: "request_fix", summary: `${event.name}: ${event.summary}`, attempt },
           { type: "notify", message: `${event.name} failed. Automatic fix round ${attempt} started.` },
@@ -99,8 +123,12 @@ type TelegramOrchestrationStorage = Pick<
   | "startDraft"
   | "appendDraftItem"
   | "getOpenDraft"
+  | "getDraftBySubmission"
+  | "saveSubmissionPlan"
+  | "getSubmissionPlan"
   | "closeDraft"
   | "linkWork"
+  | "enqueueJob"
   | "enqueueNotification"
 >;
 
@@ -111,7 +139,6 @@ type TelegramGitHubGateway = {
     plan: WorkPlan,
     source: FeedbackBundle["source"],
   ): Promise<PlannedIssueResult>;
-  dispatchBuild?(repository: string, issueNumber: number): Promise<void>;
 };
 
 export type TelegramOrchestrationDependencies = {
@@ -119,6 +146,7 @@ export type TelegramOrchestrationDependencies = {
   adminIds: string[];
   telegram: TelegramClient;
   transcribe(bytes: Buffer, mimeType: string): Promise<string>;
+  analyzeVideo(bytes: Buffer, mimeType: string): Promise<{ transcript: string; images: string[] }>;
   model: IntakeModel;
   github: TelegramGitHubGateway;
   builder?: Provider;
@@ -146,11 +174,11 @@ export const processTelegramUpdate = async (
   dependencies: TelegramOrchestrationDependencies,
 ): Promise<void> => {
   const { action } = update;
+  if (!dependencies.adminIds.includes(update.userId)) {
+    notify(update, dependencies, "unauthorized", "This Telegram user is not allowed to operate Flow AI.");
+    return;
+  }
   if (action.type === "connect") {
-    if (!dependencies.adminIds.includes(update.userId)) {
-      notify(update, dependencies, "unauthorized", "Only a configured administrator can connect a repository.");
-      return;
-    }
     const access = await dependencies.github.hasRepositoryAccess(action.repository);
     dependencies.storage.bindChat(
       update.chatId,
@@ -164,7 +192,7 @@ export const processTelegramUpdate = async (
 
   if (action.type === "new") {
     dependencies.storage.startDraft(update.chatId, update.topicId, update.userId);
-    notify(update, dependencies, "draft", "New request started. Send text, screenshots, documents, or voice notes, then use /ship.");
+    notify(update, dependencies, "draft", "New request started. Send text, screenshots, recordings, documents, or voice notes, then use /ship.");
     return;
   }
 
@@ -203,12 +231,15 @@ export const processTelegramUpdate = async (
   }
 
   const binding = dependencies.storage.getChatBinding(update.chatId, update.topicId);
-  const draft = dependencies.storage.getOpenDraft(update.chatId, update.topicId, update.userId);
+  const draft = dependencies.storage.getDraftBySubmission(update.updateId)
+    ?? dependencies.storage.getOpenDraft(update.chatId, update.topicId, update.userId);
   if (!binding || !draft || draft.items.length === 0) {
     notify(update, dependencies, "cannot-submit", "Connect a repository and add feedback before using /ship.");
     return;
   }
 
+  const stored = dependencies.storage.getSubmissionPlan(draft.id);
+  const repository = stored?.repository ?? binding.repository;
   const bundle: FeedbackBundle = {
     source: {
       chatId: draft.chatId,
@@ -216,24 +247,28 @@ export const processTelegramUpdate = async (
       userId: draft.userId,
       messageIds: draft.messageIds,
     },
-    repository: binding.repository,
+    repository,
     items: draft.items,
   };
-  const prepared = await prepareFeedback(bundle, {
-    downloadFile: dependencies.telegram.downloadFile,
-    transcribe: dependencies.transcribe,
-  });
-  const plan = await buildWorkPlan(bundle, {}, dependencies.model, prepared);
-  const result = await dependencies.github.createPlannedIssue(binding.repository, plan, bundle.source);
-  dependencies.storage.closeDraft(draft.id, "submitted");
+  const plan = stored?.plan ?? await (async () => {
+    const prepared = await prepareFeedback(bundle, {
+      downloadFile: dependencies.telegram.downloadFile,
+      transcribe: dependencies.transcribe,
+      analyzeVideo: dependencies.analyzeVideo,
+    });
+    const created = await buildWorkPlan(bundle, {}, dependencies.model, prepared);
+    dependencies.storage.saveSubmissionPlan(draft.id, update.updateId, repository, created);
+    return created;
+  })();
+  const result = await dependencies.github.createPlannedIssue(repository, plan, bundle.source);
 
   const parentState: FlowState = plan.needsHumanInput
     ? "blocked"
     : result.childNumbers.length > 0
       ? "inbox"
       : "ready";
-  dependencies.storage.linkWork({
-    repository: binding.repository,
+  const parentWork: WorkRecord = {
+    repository,
     issueNumber: result.parentNumber,
     chatId: update.chatId,
     topicId: update.topicId,
@@ -242,31 +277,39 @@ export const processTelegramUpdate = async (
     fixRounds: 0,
     state: parentState,
     headSha: null,
+    repairHeadSha: null,
     passedChecks: [],
-  });
+  };
+  dependencies.storage.linkWork(parentWork);
 
-  for (const issueNumber of result.childNumbers) {
-    dependencies.storage.linkWork({
-      repository: binding.repository,
-      issueNumber,
-      chatId: update.chatId,
-      topicId: update.topicId,
-      pullRequestNumber: null,
-      providerJobId: null,
-      fixRounds: 0,
-      state: "ready",
-      headSha: null,
-      passedChecks: [],
-    });
-  }
+  const childWork: WorkRecord[] = result.childNumbers.map((issueNumber) => ({
+    repository,
+    issueNumber,
+    chatId: update.chatId,
+    topicId: update.topicId,
+    pullRequestNumber: null,
+    providerJobId: null,
+    fixRounds: 0,
+    state: "ready",
+    headSha: null,
+    repairHeadSha: null,
+    passedChecks: [],
+  }));
+  for (const work of childWork) dependencies.storage.linkWork(work);
 
-  if (!plan.needsHumanInput && dependencies.builder !== "cursor" && dependencies.github.dispatchBuild) {
+  if (!plan.needsHumanInput) {
     const buildIssues = result.childNumbers.length > 0 ? result.childNumbers : [result.parentNumber];
-    await Promise.all(buildIssues.map((issueNumber) =>
-      dependencies.github.dispatchBuild!(binding.repository, issueNumber)));
+    for (const issueNumber of buildIssues) {
+      dependencies.storage.enqueueJob(
+        "build",
+        `build:${repository}#${issueNumber}`,
+        { repository, issueNumber },
+      );
+    }
   }
 
-  const issueUrl = `https://github.com/${binding.repository}/issues/${result.parentNumber}`;
+  const issueUrl = `https://github.com/${repository}/issues/${result.parentNumber}`;
   const units = result.childNumbers.length > 0 ? ` with ${result.childNumbers.length} parallel work units` : "";
   notify(update, dependencies, "submitted", `Created <a href="${issueUrl}">GitHub issue #${result.parentNumber}</a>${units}.`);
+  dependencies.storage.closeDraft(draft.id, "submitted", update.updateId);
 };

@@ -10,3 +10,5 @@
 8. Run the commands declared in `.flow/config.json` before completing work.
 9. The pull request must summarize the change, map acceptance criteria to evidence, list checks run, disclose risks, and attach visual evidence for UI changes.
 10. Never merge, approve, force-push, rewrite shared history, or bypass repository rules.
+11. For changed UI or API behavior, tests must exercise the running application and real configured endpoint. Do not intercept the acceptance path, replace it with a mock response, or claim screenshots as functional proof.
+12. UI evidence must cover the configured mobile and desktop viewports and preserve the project's design tokens, fonts, interaction sizes, and overflow rules.

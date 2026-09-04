@@ -47,6 +47,7 @@ export type PlanningInput = {
 export type MediaDependencies = {
   downloadFile(fileId: string): Promise<{ bytes: Buffer; mimeType: string }>;
   transcribe(bytes: Buffer, mimeType: string): Promise<string>;
+  analyzeVideo(bytes: Buffer, mimeType: string): Promise<{ transcript: string; images: string[] }>;
 };
 
 export type PreparedFeedback = {
@@ -58,7 +59,7 @@ export const redactSecrets = (input: string): string =>
   input
     .replace(/\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD))\s*=\s*[^\s]+/gi, "$1=[REDACTED]")
     .replace(/\b(password\s*[:=]\s*)[^\s]+/gi, "$1[REDACTED]")
-    .replace(/\b(bearer\s+)[A-Za-z0-9._~+\/-]+/gi, "$1[REDACTED]");
+    .replace(/\b(bearer\s+)[A-Za-z0-9._~+/-]+/gi, "$1[REDACTED]");
 
 const bundleText = (bundle: FeedbackBundle): string =>
   bundle.items
@@ -106,7 +107,8 @@ export const buildWorkPlan = async (
     };
   }
 
-  if (HIGH_RISK_PATTERN.test(planningInput.feedback)) {
+  const classifiedText = `${planningInput.feedback}\n${JSON.stringify(plan)}`;
+  if (HIGH_RISK_PATTERN.test(classifiedText)) {
     const risk = "High-risk area detected in submitted feedback.";
     plan = {
       ...plan,
@@ -140,6 +142,10 @@ export const prepareFeedback = async (
     if (item.caption) text.push(redactSecrets(item.caption));
     if (item.kind === "voice") {
       text.push(redactSecrets(await dependencies.transcribe(file.bytes, file.mimeType)));
+    } else if (item.kind === "video") {
+      const recording = await dependencies.analyzeVideo(file.bytes, file.mimeType);
+      if (recording.transcript.trim()) text.push(redactSecrets(recording.transcript));
+      images.push(...recording.images);
     } else if (item.kind === "photo") {
       images.push(`data:${file.mimeType};base64,${file.bytes.toString("base64")}`);
     } else {
@@ -156,7 +162,7 @@ const escapeHtml = (input: string): string =>
 const bullets = (items: string[]): string =>
   items.length === 0 ? "- None" : items.map((item) => `- ${escapeHtml(item)}`).join("\n");
 
-export const formatIssueBody = (plan: WorkPlan, source: FeedbackBundle["source"]): string => `## Problem
+export const formatIssueBody = (plan: WorkPlan): string => `## Problem
 
 ${escapeHtml(plan.problem)}
 
@@ -178,10 +184,7 @@ ${bullets(plan.risks)}
 
 ## Source
 
-- Telegram chat: ${escapeHtml(source.chatId)}
-- Telegram topic: ${source.topicId === null ? "none" : escapeHtml(source.topicId)}
-- Telegram user: ${escapeHtml(source.userId)}
-- Telegram messages: ${source.messageIds.join(", ")}
+- Recorded privately by Flow AI. Telegram identifiers remain in the service database.
 `;
 
 type OpenAIIntakeOptions = {

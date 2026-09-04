@@ -2,6 +2,14 @@ import { z } from "zod";
 import type { Provider } from "./domain.js";
 
 const ProviderSchema = z.enum(["codex", "claude", "cursor"]);
+const OptionalProviderSchema = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  ProviderSchema.optional(),
+);
+const OptionalSecretSchema = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  z.string().min(1).optional(),
+);
 
 const EnvironmentSchema = z
   .object({
@@ -16,19 +24,21 @@ const EnvironmentSchema = z
     GITHUB_APP_PRIVATE_KEY_BASE64: z.string().min(1),
     GITHUB_WEBHOOK_SECRET: z.string().min(1),
     OPENAI_API_KEY: z.string().min(1),
-    ANTHROPIC_API_KEY: z.string().min(1),
-    CURSOR_API_KEY: z.string().min(1).optional(),
+    ANTHROPIC_API_KEY: OptionalSecretSchema,
+    CURSOR_API_KEY: OptionalSecretSchema,
+    FLOW_AGENT: OptionalProviderSchema,
     FLOW_BUILDER: ProviderSchema.default("codex"),
     FLOW_REVIEWER: ProviderSchema.default("claude"),
-    FLOW_MAX_ISSUE_COST_USD: z.coerce.number().positive().default(25),
+    FLOW_CODEOWNERS: z.string().min(1),
     FLOW_MAX_FIX_ROUNDS: z.coerce.number().int().min(0).max(5).default(2),
-    FLOW_MAX_GLOBAL_BUILDS: z.coerce.number().int().min(1).max(50).default(5),
   })
   .superRefine((value, context) => {
     if (value.NODE_ENV !== "test" && !value.PUBLIC_URL.startsWith("https://")) {
       context.addIssue({ code: "custom", path: ["PUBLIC_URL"], message: "PUBLIC_URL must use HTTPS" });
     }
-    if (value.FLOW_BUILDER === value.FLOW_REVIEWER) {
+    const builder = value.FLOW_AGENT ?? value.FLOW_BUILDER;
+    const reviewer = value.FLOW_AGENT ?? value.FLOW_REVIEWER;
+    if (!value.FLOW_AGENT && builder === reviewer) {
       context.addIssue({
         code: "custom",
         path: ["FLOW_REVIEWER"],
@@ -36,13 +46,31 @@ const EnvironmentSchema = z
       });
     }
     if (
-      (value.FLOW_BUILDER === "cursor" || value.FLOW_REVIEWER === "cursor") &&
+      (builder === "cursor" || reviewer === "cursor") &&
       !value.CURSOR_API_KEY
     ) {
       context.addIssue({
         code: "custom",
         path: ["CURSOR_API_KEY"],
         message: "CURSOR_API_KEY is required when Cursor is selected",
+      });
+    }
+    if ((builder === "claude" || reviewer === "claude") && !value.ANTHROPIC_API_KEY) {
+      context.addIssue({
+        code: "custom",
+        path: ["ANTHROPIC_API_KEY"],
+        message: "ANTHROPIC_API_KEY is required when Claude is selected",
+      });
+    }
+    const codeowners = value.FLOW_CODEOWNERS.split(/[\s,]+/).filter(Boolean);
+    if (
+      codeowners.length === 0
+      || codeowners.some((entry) => !/^@[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?$/.test(entry))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["FLOW_CODEOWNERS"],
+        message: "FLOW_CODEOWNERS must contain GitHub @users or @org/teams",
       });
     }
   });
@@ -54,19 +82,22 @@ export type AppConfig = {
   databasePath: string;
   telegram: { botToken: string; webhookSecret: string; adminIds: string[] };
   github: { appId: number; privateKey: string; webhookSecret: string };
-  providers: { openaiApiKey: string; anthropicApiKey: string; cursorApiKey?: string };
+  providers: { openaiApiKey: string; anthropicApiKey?: string; cursorApiKey?: string };
   flow: {
     builder: Provider;
     reviewer: Provider;
-    maxIssueCostUsd: number;
+    qa: Provider;
+    codeowners: string[];
     maxFixRounds: number;
-    maxGlobalBuilds: number;
   };
 };
 
 export const loadConfig = (env: Record<string, string | undefined>): AppConfig => {
   const value = EnvironmentSchema.parse(env);
+  const builder = value.FLOW_AGENT ?? value.FLOW_BUILDER;
+  const reviewer = value.FLOW_AGENT ?? value.FLOW_REVIEWER;
   const cursor = value.CURSOR_API_KEY ? { cursorApiKey: value.CURSOR_API_KEY } : {};
+  const anthropic = value.ANTHROPIC_API_KEY ? { anthropicApiKey: value.ANTHROPIC_API_KEY } : {};
 
   return {
     environment: value.NODE_ENV,
@@ -85,15 +116,15 @@ export const loadConfig = (env: Record<string, string | undefined>): AppConfig =
     },
     providers: {
       openaiApiKey: value.OPENAI_API_KEY,
-      anthropicApiKey: value.ANTHROPIC_API_KEY,
+      ...anthropic,
       ...cursor,
     },
     flow: {
-      builder: value.FLOW_BUILDER,
-      reviewer: value.FLOW_REVIEWER,
-      maxIssueCostUsd: value.FLOW_MAX_ISSUE_COST_USD,
+      builder,
+      reviewer,
+      qa: value.FLOW_AGENT ?? reviewer,
+      codeowners: value.FLOW_CODEOWNERS.split(/[\s,]+/).filter(Boolean),
       maxFixRounds: value.FLOW_MAX_FIX_ROUNDS,
-      maxGlobalBuilds: value.FLOW_MAX_GLOBAL_BUILDS,
     },
   };
 };

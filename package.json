@@ -8,8 +8,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js",
+    "dev": "node --env-file-if-exists=.env --import tsx --watch src/index.ts",
+    "start": "node --env-file-if-exists=.env dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -22,11 +22,13 @@
     "fastify": "^5.12.1",
     "fastify-raw-body": "^6.0.1",
     "jose": "^6.2.10",
+    "libsodium-wrappers": "^0.8.4",
     "zod": "^4.5.4"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^9.6.0",
+    "@types/libsodium-wrappers": "^0.7.14",
     "@types/node": "^26.4.1",
     "@vitest/coverage-v8": "^5.0.0",
     "eslint": "^10.9.1",

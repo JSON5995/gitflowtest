@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+set -eu
+
+FLOW_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if [ -f "$FLOW_ROOT/dist/cli.js" ]; then
+  exec node "--env-file-if-exists=$FLOW_ROOT/.env" "$FLOW_ROOT/dist/cli.js" "$@"
+fi
+
+exec node "--env-file-if-exists=$FLOW_ROOT/.env" --import tsx "$FLOW_ROOT/src/cli.ts" "$@"

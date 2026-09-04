@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import type { FeedbackItem, FlowState } from "./domain.js";
+import type { FeedbackItem, FlowState, WorkPlan } from "./domain.js";
 
 export type Job = {
   id: number;
@@ -36,6 +36,8 @@ export type Draft = {
   items: FeedbackItem[];
 };
 
+export type SubmissionPlan = { repository: string; plan: WorkPlan };
+
 export type WorkRecord = {
   repository: string;
   issueNumber: number;
@@ -46,6 +48,7 @@ export type WorkRecord = {
   fixRounds: number;
   state: FlowState;
   headSha: string | null;
+  repairHeadSha: string | null;
   passedChecks: string[];
 };
 
@@ -57,6 +60,15 @@ type FailureOptions = {
 
 export type Storage = {
   recordWebhook(source: string, deliveryId: string, payloadHash: string): boolean;
+  recordWebhookJob(
+    source: string,
+    deliveryId: string,
+    payloadHash: string,
+    kind: string,
+    idempotencyKey: string,
+    payload: unknown,
+    now?: number,
+  ): boolean;
   enqueueJob(kind: string, idempotencyKey: string, payload: unknown, now?: number): boolean;
   claimJob(now?: number, leaseMs?: number): Job | null;
   completeJob(id: number): void;
@@ -70,6 +82,7 @@ export type Storage = {
   ): boolean;
   claimNotification(now?: number, leaseMs?: number): Notification | null;
   completeNotification(id: number): void;
+  failNotification(id: number, error: string, now: number, options: FailureOptions): void;
   bindChat(
     chatId: string,
     topicId: string | null,
@@ -87,7 +100,10 @@ export type Storage = {
   ): number;
   appendDraftItem(draftId: number, messageId: number, item: FeedbackItem, now?: number): boolean;
   getOpenDraft(chatId: string, topicId: string | null, userId: string, now?: number): Draft | null;
-  closeDraft(id: number, status: "submitted" | "cancelled" | "expired"): void;
+  getDraftBySubmission(submissionId: string): Draft | null;
+  saveSubmissionPlan(draftId: number, submissionId: string, repository: string, plan: WorkPlan): void;
+  getSubmissionPlan(draftId: number): SubmissionPlan | null;
+  closeDraft(id: number, status: "submitted" | "cancelled" | "expired", submissionId?: string): void;
   linkWork(work: WorkRecord, now?: number): void;
   saveWork(work: WorkRecord, now?: number): void;
   getWorkByIssue(repository: string, issueNumber: number): WorkRecord | null;
@@ -142,6 +158,7 @@ type WorkRow = {
   fix_rounds: number;
   state: FlowState;
   head_sha: string | null;
+  repair_head_sha: string | null;
   passed_checks: string;
 };
 
@@ -161,6 +178,9 @@ CREATE TABLE IF NOT EXISTS drafts (
   topic_id TEXT NOT NULL DEFAULT '',
   user_id TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'open',
+  submission_id TEXT,
+  repository TEXT,
+  plan_json TEXT,
   expires_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
@@ -212,6 +232,7 @@ CREATE TABLE IF NOT EXISTS work_links (
   fix_rounds INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL,
   head_sha TEXT,
+  repair_head_sha TEXT,
   passed_checks TEXT NOT NULL DEFAULT '[]',
   updated_at INTEGER NOT NULL,
   PRIMARY KEY(repository, issue_number)
@@ -245,9 +266,17 @@ export const openStorage = (path: string): Storage => {
     (database.pragma("table_info(work_links)") as Array<{ name: string }>).map((column) => column.name),
   );
   if (!workColumns.has("head_sha")) database.exec("ALTER TABLE work_links ADD COLUMN head_sha TEXT");
+  if (!workColumns.has("repair_head_sha")) database.exec("ALTER TABLE work_links ADD COLUMN repair_head_sha TEXT");
   if (!workColumns.has("passed_checks")) {
     database.exec("ALTER TABLE work_links ADD COLUMN passed_checks TEXT NOT NULL DEFAULT '[]'");
   }
+  const draftColumns = new Set(
+    (database.pragma("table_info(drafts)") as Array<{ name: string }>).map((column) => column.name),
+  );
+  if (!draftColumns.has("submission_id")) database.exec("ALTER TABLE drafts ADD COLUMN submission_id TEXT");
+  if (!draftColumns.has("repository")) database.exec("ALTER TABLE drafts ADD COLUMN repository TEXT");
+  if (!draftColumns.has("plan_json")) database.exec("ALTER TABLE drafts ADD COLUMN plan_json TEXT");
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS drafts_submission ON drafts(submission_id) WHERE submission_id IS NOT NULL");
   let open = true;
 
   const claimJobTransaction = database.transaction((now: number, leaseMs: number) => {
@@ -298,6 +327,7 @@ export const openStorage = (path: string): Storage => {
           fixRounds: row.fix_rounds,
           state: row.state,
           headSha: row.head_sha,
+          repairHeadSha: row.repair_head_sha,
           passedChecks: JSON.parse(row.passed_checks) as string[],
         }
       : null;
@@ -307,8 +337,8 @@ export const openStorage = (path: string): Storage => {
       .prepare(
         `INSERT INTO work_links(
            repository, issue_number, chat_id, topic_id, pull_request_number,
-           provider_job_id, fix_rounds, state, head_sha, passed_checks, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           provider_job_id, fix_rounds, state, head_sha, repair_head_sha, passed_checks, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(repository, issue_number) DO UPDATE SET
            chat_id = excluded.chat_id,
            topic_id = excluded.topic_id,
@@ -317,6 +347,7 @@ export const openStorage = (path: string): Storage => {
            fix_rounds = excluded.fix_rounds,
            state = excluded.state,
            head_sha = excluded.head_sha,
+           repair_head_sha = excluded.repair_head_sha,
            passed_checks = excluded.passed_checks,
            updated_at = excluded.updated_at`,
       )
@@ -330,6 +361,7 @@ export const openStorage = (path: string): Storage => {
         work.fixRounds,
         work.state,
         work.headSha,
+        work.repairHeadSha,
         JSON.stringify(work.passedChecks),
         now,
       );
@@ -343,6 +375,25 @@ export const openStorage = (path: string): Storage => {
         )
         .run(source, deliveryId, payloadHash, Date.now());
       return result.changes === 1;
+    },
+
+    recordWebhookJob(source, deliveryId, payloadHash, kind, idempotencyKey, payload, now = Date.now()) {
+      const transaction = database.transaction(() => {
+        const receipt = database
+          .prepare(
+            "INSERT OR IGNORE INTO webhook_receipts(source, delivery_id, payload_hash, received_at) VALUES (?, ?, ?, ?)",
+          )
+          .run(source, deliveryId, payloadHash, now);
+        if (receipt.changes !== 1) return false;
+        database
+          .prepare(
+            `INSERT INTO jobs(kind, idempotency_key, payload, available_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run(kind, idempotencyKey, JSON.stringify(payload), now, now, now);
+        return true;
+      });
+      return transaction.immediate();
     },
 
     enqueueJob(kind, idempotencyKey, payload, now = Date.now()) {
@@ -416,6 +467,24 @@ export const openStorage = (path: string): Storage => {
 
     completeNotification(id) {
       database.prepare("UPDATE outbox SET status = 'complete', lease_until = NULL, updated_at = ? WHERE id = ?").run(Date.now(), id);
+    },
+
+    failNotification(id, error, now, options) {
+      const row = database.prepare("SELECT attempts FROM outbox WHERE id = ?").get(id) as
+        | { attempts: number }
+        | undefined;
+      if (!row) throw new Error(`Unknown notification ${id}`);
+      const attempts = row.attempts + 1;
+      const permanent = options.permanent === true || attempts >= options.maxAttempts;
+      const jitter = options.jitterMs ?? Math.floor(Math.random() * 500);
+      const availableAt = now + Math.min(3_600_000, 1_000 * 2 ** attempts) + jitter;
+      database
+        .prepare(
+          `UPDATE outbox
+           SET status = ?, attempts = ?, available_at = ?, lease_until = NULL, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(permanent ? "failed" : "pending", attempts, availableAt, now, id);
     },
 
     bindChat(chatId, topicId, installationId, repository, now = Date.now()) {
@@ -498,8 +567,49 @@ export const openStorage = (path: string): Storage => {
       };
     },
 
-    closeDraft(id, status) {
-      database.prepare("UPDATE drafts SET status = ? WHERE id = ? AND status = 'open'").run(status, id);
+    getDraftBySubmission(submissionId) {
+      const row = database
+        .prepare(
+          `SELECT id, chat_id, topic_id, user_id FROM drafts
+           WHERE submission_id = ?`,
+        )
+        .get(submissionId) as DraftRow | undefined;
+      if (!row) return null;
+      const items = database
+        .prepare("SELECT message_id, payload FROM draft_items WHERE draft_id = ? ORDER BY id")
+        .all(row.id) as DraftItemRow[];
+      return {
+        id: row.id,
+        chatId: row.chat_id,
+        topicId: row.topic_id === "" ? null : row.topic_id,
+        userId: row.user_id,
+        messageIds: items.map((item) => item.message_id),
+        items: items.map((item) => JSON.parse(item.payload) as FeedbackItem),
+      };
+    },
+
+    saveSubmissionPlan(draftId, submissionId, repository, plan) {
+      database
+        .prepare(
+          `UPDATE drafts SET submission_id = ?, repository = ?, plan_json = ?
+           WHERE id = ? AND (submission_id IS NULL OR submission_id = ?)`,
+        )
+        .run(submissionId, repository, JSON.stringify(plan), draftId, submissionId);
+    },
+
+    getSubmissionPlan(draftId) {
+      const row = database
+        .prepare("SELECT repository, plan_json FROM drafts WHERE id = ?")
+        .get(draftId) as { repository: string | null; plan_json: string | null } | undefined;
+      return row?.repository && row.plan_json
+        ? { repository: row.repository, plan: JSON.parse(row.plan_json) as WorkPlan }
+        : null;
+    },
+
+    closeDraft(id, status, submissionId) {
+      database
+        .prepare("UPDATE drafts SET status = ?, submission_id = COALESCE(?, submission_id) WHERE id = ? AND status = 'open'")
+        .run(status, submissionId ?? null, id);
     },
 
     linkWork(work, now = Date.now()) {

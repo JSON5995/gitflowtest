@@ -9,6 +9,25 @@ describe("loadConfig", () => {
     ).toThrow(/must differ/);
   });
 
+  it("allows one explicitly selected agent to own every AI role", () => {
+    const config = loadConfig(validEnv({
+      FLOW_AGENT: "codex",
+      FLOW_BUILDER: undefined,
+      FLOW_REVIEWER: undefined,
+    }));
+
+    expect(config.flow).toMatchObject({ builder: "codex", reviewer: "codex", qa: "codex" });
+  });
+
+  it("does not require an unused Anthropic credential in single-Codex mode", () => {
+    expect(() => loadConfig(validEnv({
+      FLOW_AGENT: "codex",
+      FLOW_BUILDER: undefined,
+      FLOW_REVIEWER: undefined,
+      ANTHROPIC_API_KEY: undefined,
+    }))).not.toThrow();
+  });
+
   it("requires an HTTPS public URL outside tests", () => {
     expect(() =>
       loadConfig(validEnv({ NODE_ENV: "production", PUBLIC_URL: "http://example.com" })),
@@ -21,6 +40,17 @@ describe("loadConfig", () => {
     ).toThrow(/CURSOR_API_KEY/);
   });
 
+  it("allows Cursor to review when its headless CLI credential is present", () => {
+    const config = loadConfig(validEnv({
+      FLOW_AGENT: "cursor",
+      FLOW_BUILDER: undefined,
+      FLOW_REVIEWER: undefined,
+      CURSOR_API_KEY: "cursor-key",
+    }));
+
+    expect(config.flow).toMatchObject({ builder: "cursor", reviewer: "cursor", qa: "cursor" });
+  });
+
   it("parses limits and Telegram administrator IDs", () => {
     const config = loadConfig(validEnv());
 
@@ -28,8 +58,12 @@ describe("loadConfig", () => {
     expect(config.flow).toMatchObject({
       builder: "codex",
       reviewer: "claude",
-      maxIssueCostUsd: 25,
+      codeowners: ["@acme/platform", "@release-owner"],
       maxFixRounds: 2,
     });
+  });
+
+  it("requires explicit GitHub users or teams for human approval", () => {
+    expect(() => loadConfig(validEnv({ FLOW_CODEOWNERS: "platform-team" }))).toThrow(/FLOW_CODEOWNERS/);
   });
 });

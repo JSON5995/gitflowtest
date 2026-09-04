@@ -56,6 +56,30 @@ describe("Telegram update parsing", () => {
     });
   });
 
+  it("captures screen recordings and round Telegram video notes", () => {
+    const update = fixture("telegram-text.json") as {
+      message: { text?: string; video_note?: Record<string, unknown> };
+    };
+    delete update.message.text;
+    update.message.video_note = {
+      file_id: "screen-recording",
+      file_size: 420_000,
+      mime_type: "video/mp4",
+      duration: 18,
+      length: 384,
+    };
+
+    expect(parseTelegramUpdate(update)?.action).toEqual({
+      type: "append",
+      item: {
+        kind: "video",
+        fileId: "screen-recording",
+        fileSize: 420_000,
+        mimeType: "video/mp4",
+      },
+    });
+  });
+
   it("parses control commands without treating them as feedback", () => {
     const update = fixture("telegram-text.json") as { message: { text: string } };
     update.message.text = "/connect acme/store";
@@ -79,7 +103,7 @@ describe("Telegram webhook", () => {
     storages.push(storage);
     const server = Fastify();
     servers.push(server);
-    registerTelegramRoutes(server, { storage, webhookSecret: "right" });
+    registerTelegramRoutes(server, { storage, webhookSecret: "right", allowedUserIds: ["123"] });
 
     const response = await server.inject({
       method: "POST",
@@ -96,7 +120,7 @@ describe("Telegram webhook", () => {
     storages.push(storage);
     const server = Fastify();
     servers.push(server);
-    registerTelegramRoutes(server, { storage, webhookSecret: "right" });
+    registerTelegramRoutes(server, { storage, webhookSecret: "right", allowedUserIds: ["123"] });
     const request = {
       method: "POST" as const,
       url: "/webhooks/telegram",
@@ -113,5 +137,23 @@ describe("Telegram webhook", () => {
     expect(job?.idempotencyKey).toBe("telegram:1001");
     storage.completeJob(job!.id);
     expect(storage.claimJob(Date.now() + 1000, 1000)).toBeNull();
+  });
+
+  it("does not queue updates from users outside the allowlist", async () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+    const server = Fastify();
+    servers.push(server);
+    registerTelegramRoutes(server, { storage, webhookSecret: "right", allowedUserIds: ["999"] });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/webhooks/telegram",
+      headers: { "x-telegram-bot-api-secret-token": "right" },
+      payload: fixture("telegram-text.json"),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(storage.claimJob(Date.now() + 1_000, 1_000)).toBeNull();
   });
 });

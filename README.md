@@ -1,118 +1,439 @@
 # Flow AI
 
-Flow AI turns a Telegram group into a guarded software-delivery queue:
+Turn Telegram feedback into reviewed, tested GitHub pull requests.
 
-`Telegram feedback → planned GitHub issues → Claude/Codex/Cursor build → AI review → real CI + browser/API/visual QA → human approval`
-
-It is one Node service, one SQLite file, and four small workflows installed in each repository. GitHub remains the source of truth. The service never merges a pull request.
-
-The running service uses a least-privilege GitHub App and GitHub's REST API. One-time repository provisioning uses the administrator's GitHub CLI login. Repository workflows use `gh` for issue/PR data and local `git` inside isolated Actions checkouts. This keeps runtime access narrow while every branch, commit, PR, label, check, and rule remains auditable in GitHub.
-
-## 1. Create the two integrations
-
-### Telegram
-
-1. In BotFather, create a bot and copy its token.
-2. Use BotFather's `/setprivacy` command and disable privacy for this bot. This lets it receive ordinary feedback, screenshots, documents, and voice notes in a group.
-3. Add the bot to the Telegram group. It does not need administrator rights.
-4. Record the numeric Telegram user IDs allowed to connect repositories. Separate multiple IDs with commas.
-
-### GitHub App
-
-Create one private GitHub App for the service. Set its webhook URL to `https://YOUR-FLOW-HOST/webhooks/github`, create a strong webhook secret, and enable these repository permissions:
-
-- Actions: Read and write
-- Checks: Read and write
-- Contents: Read-only
-- Issues: Read and write
-- Metadata: Read-only
-- Pull requests: Read and write
-
-Subscribe to the **Pull request** and **Workflow run** events. Generate a private key and install the App on every repository Flow AI may use. Do not grant this runtime App Administration, Secrets, Variables, or Workflows permission; provisioning deliberately uses a separate human administrator credential.
-
-## 2. Configure it
-
-Choose one delivery agent for every AI role:
-
-```sh
-./flow setup --agent codex
-# or: claude / cursor
+```text
+Telegram feedback
+    ↓
+GitHub issue + small work units
+    ↓
+Claude, Codex, or Cursor builds the change
+    ↓
+Independent CI, code review, API, browser, and visual QA
+    ↓
+Draft PR becomes ready for a human CODEOWNER
 ```
 
-For stronger separation, run `./flow setup` and leave `FLOW_AGENT` blank; then choose different `FLOW_BUILDER` and `FLOW_REVIEWER` values.
+Flow AI is deliberately small: one Node service, one SQLite database, and four GitHub Actions workflows installed in each project. GitHub remains the source of truth. Flow AI never merges a pull request.
 
-Edit `.env` and fill the required integration values plus the key for the selected delivery agent. The setup command creates this file with owner-only permissions. Generate separate Telegram and GitHub webhook secrets with `openssl rand -hex 32`. Convert the downloaded GitHub private key to the required single-line value with:
+## The simple version
 
-```sh
-node -e "process.stdout.write(require('fs').readFileSync('YOUR-KEY.pem').toString('base64'))"
-```
-
-`PUBLIC_URL` must be the public HTTPS address of this service. OpenAI currently handles multimodal Telegram planning and transcription, so `OPENAI_API_KEY` is always required. Add `ANTHROPIC_API_KEY` when Claude is selected or `CURSOR_API_KEY` when Cursor is selected. In single-agent mode, the selected vendor performs build, code review, and visual QA in separate invocations; split mode remains the safer default for independent review.
-
-Set `FLOW_CODEOWNERS` to the human GitHub users or organization teams that may approve generated pull requests, such as `@octocat` or `@your-org/platform-team`. Flow AI installs this as a repository-wide CODEOWNERS rule; the runtime App is deliberately unable to alter it.
-
-Validate everything local before deployment:
+Install and configure Flow AI once. After that, enter any local GitHub project and run:
 
 ```sh
-./flow doctor
+cd /path/to/your-project
+flow-ai repo add
 ```
 
-## 3. Run the service
+The CLI detects `OWNER/REPO` through GitHub CLI and prepares the repository. It installs the workflows, labels, encrypted AI secrets, read-only workflow defaults, protected files, required checks, and human CODEOWNER merge gate through a reviewable `flow/setup` pull request.
 
-```sh
-docker compose up -d --build
-docker compose ps
-```
-
-Deploy the same container on any host that gives it a stable HTTPS URL. Keep the `/data` volume; it contains the durable queue and work links. Only port 3000 needs routing. Never expose `.env` or the SQLite volume publicly.
-
-## 4. Add a repository
-
-```sh
-gh auth login
-gh auth status
-./flow repo add OWNER/REPO
-```
-
-The command uses the GitHub CLI credential only for provisioning. It creates a `flow/setup` branch and pull request, attempts to merge that setup PR through the repository's existing rules, installs encrypted Actions secrets, sets workflow variables, creates the `flow:*` labels, forces the repository's default workflow token to read-only, and installs the human-code-owner approval ruleset only after setup is merged. If existing protection requires a person to approve the setup PR, the command prints its link; merge it and run the same command once more. Existing `AGENTS.md`, `CLAUDE.md`, and CODEOWNERS content is preserved; the Flow rule is appended as the final repository-wide ownership rule.
-
-The included preset assumes a Node web app that starts on port 3000. Before adding another stack, change `repo-kit/.flow/config.json` to safe command arrays and set the real start/health values. No shell strings are accepted. Configure `repo-kit/.flow/qa.json` with the application's real routes, API probes, expected UI state, approved fonts/design tokens, and any login journey. The shipped contract already fails closed unless it has at least one live API probe, one browser journey, and both mobile and desktop viewports.
-
-For an authenticated journey, use an isolated preview deployment and set the repository variable `FLOW_QA_BASE_URL`; `{pr}` may be used as a pull-request-number placeholder. Store only dedicated, low-privilege test values in `FLOW_QA_EMAIL`, `FLOW_QA_PASSWORD`, and `FLOW_QA_TOKEN` repository secrets. Never use production or customer credentials. Local merge-candidate testing intentionally receives no repository secrets.
-
-## 5. Use it from Telegram
-
-In the Telegram group or topic:
+Then connect the project in Telegram:
 
 ```text
 /connect OWNER/REPO
 /new
 ```
 
-Send messages, screenshots, documents, voice notes, ordinary videos, or Telegram video notes, then send:
+Send feedback, screenshots, voice notes, or a screen recording, followed by:
 
 ```text
 /ship
 ```
 
-Flow AI redacts common secret patterns in text, transcribes voice and screen-recording audio, samples up to 12 recording frames for vision, creates one parent issue plus independently mergeable sub-issues, and starts work. Telegram identities remain private in SQLite; GitHub receives only an HMAC correlation marker. Screenshots and sampled frames are sent to the configured OpenAI account for vision, so the Telegram allowlist must use dedicated business participants and they must avoid submitting unrelated confidential material. Telegram's hosted Bot API limits downloads to 20 MB; run Telegram's local Bot API server if larger recordings are required.
+Flow AI handles the delivery cycle and leaves the resulting PR ready for human approval.
 
-Each PR is checked by `ci`, `ai-review`, and `qa`. QA runs the repository's real commands, starts the actual merge candidate or targets an isolated preview, probes real endpoints without response mocks, drives configured browser journeys, and captures mobile/desktop screenshots. Deterministic checks reject horizontal overflow, unexpected fonts, missing CSS tokens, undersized controls, failed assertions, and bad endpoint responses. The selected QA agent then inspects the screenshots for visual, design-language, UI, and UX regressions. Failed checks get at most two automatic repair rounds. Passing work receives `flow:human`; GitHub still requires one human approval before merge.
+## What is automated
 
-Useful commands are `/status` and `/cancel`. Only IDs in `TELEGRAM_ADMIN_IDS` can queue feedback or use any Flow command; unauthorized updates are acknowledged and discarded before entering the durable queue.
+`flow-ai repo add` handles the repository-side setup:
 
-## Operating rules
+- Detects the current GitHub repository, or accepts an explicit `OWNER/REPO`.
+- Confirms that the runtime GitHub App can access it.
+- Creates or refreshes the isolated `flow/setup` branch.
+- Opens a setup pull request instead of writing directly to the default branch.
+- Installs the build, CI, review, and real-QA workflows.
+- Installs the repository command contract and AI rules.
+- Preserves existing `AGENTS.md`, `CLAUDE.md`, and CODEOWNERS guidance.
+- Encrypts and uploads only the AI secrets required by the selected providers.
+- Creates the `flow:*` lifecycle labels.
+- Sets the default GitHub Actions token to read-only.
+- Requires the exact Flow checks from the runtime App.
+- Requires a fresh human CODEOWNER approval before merge.
 
-- Builders can edit a credential-free checkout but cannot approve or merge. A separate clean job applies the verified patch and receives the narrowly scoped branch-write token without executing repository code.
-- Reviewers run read-only from the trusted base checkout against a fixed diff artifact and emit a strict JSON verdict. Candidate code never shares their runner with provider credentials.
-- Review, CI, and QA definitions come from the trusted default branch. The service accepts results only from the exact active workflow ID/path when the App bot dispatched it from a commit in the default branch's history, then publishes those results onto the exact PR head commit.
-- Only App-authored PRs from the exact `flow/<issue>` branch in the target repository are accepted. Forks, wrong bases, generic check runs, wrong workflow paths, and stale SHA results are ignored.
-- Webhook receipt and job creation are one database transaction. `/ship` persists its generated plan before GitHub writes, reconciles issues through opaque source markers, and queues each build durably. A failed PR head consumes at most one repair round.
-- Real local candidate tests receive no secrets. Dedicated low-privilege QA credentials are exposed only in a separate trusted-base job that drives the isolated preview URL.
-- Protected paths and all executable commands live in `.flow/`; issue text and attachments are always treated as untrusted data.
-- Every PR requires a fresh approval from a configured human CODEOWNER. The runtime App has read-only Contents access and no Administration permission, so it cannot rewrite the ownership rule or merge gate.
-- UI/API acceptance tests must hit the running application. Mock-only tests can supplement them but cannot replace them.
+You supply the integration credentials once. Flow AI cannot safely create Telegram bots, accept vendor terms, choose human approvers, or generate GitHub App private keys on your behalf.
 
-Cursor's headless CLI is currently a vendor beta and its official installer tracks the latest release. Claude and Codex Actions are commit-pinned; Stagehand and Playwright are exact-version pinned. Treat Cursor upgrades as a reviewed dependency change if your organization requires fully reproducible tooling.
+## Requirements
 
-Check service health at `/health/live` and `/health/ready`. Back up the Docker volume regularly.
+- Node.js 22 or newer
+- Docker with Compose
+- [GitHub CLI](https://cli.github.com/) authenticated as a repository administrator
+- A stable public HTTPS URL for the Flow AI service
+- A Telegram bot token
+- A private GitHub App
+- An OpenAI API key for multimodal intake and transcription
+- Provider keys for whichever delivery agents you select
+
+## 1. Install the CLI
+
+From this Flow AI checkout:
+
+```sh
+npm ci
+npm run build
+npm link
+```
+
+Confirm it is available:
+
+```sh
+flow-ai --help
+```
+
+If you do not want a global command, use `/absolute/path/to/gitflow/flow` everywhere that this guide uses `flow-ai`.
+
+## 2. Create the one-time integrations
+
+### Telegram bot
+
+1. Open BotFather and create a bot.
+2. Copy the bot token.
+3. Use BotFather's `/setprivacy` command and disable privacy for the bot. This allows it to receive ordinary feedback, screenshots, documents, voice messages, and recordings.
+4. Add the bot to the business Telegram group. It does not need administrator rights.
+5. Record the numeric Telegram user IDs that are allowed to submit work.
+
+Only allowlisted user IDs are accepted. Unauthorized updates are discarded before entering the durable queue.
+
+### Runtime GitHub App
+
+Create one private GitHub App for Flow AI.
+
+Set its webhook URL to:
+
+```text
+https://YOUR-FLOW-HOST/webhooks/github
+```
+
+Give it these repository permissions:
+
+| Permission | Access |
+| --- | --- |
+| Actions | Read and write |
+| Checks | Read and write |
+| Contents | Read-only |
+| Issues | Read and write |
+| Metadata | Read-only |
+| Pull requests | Read and write |
+
+Subscribe it to:
+
+- Pull request
+- Workflow run
+
+Generate a private key and install the App on every repository Flow AI may use. Do not grant it Administration, Secrets, Variables, or Workflows permission. Those one-time changes use the human administrator authenticated through GitHub CLI.
+
+## 3. Create the Flow AI configuration
+
+For one provider handling build, review, and visual QA:
+
+```sh
+flow-ai setup --agent codex
+```
+
+The other choices are `claude` and `cursor`.
+
+For stronger reviewer independence, use split-provider mode:
+
+```sh
+flow-ai setup
+```
+
+The command creates `.env` in the Flow AI installation directory with owner-only file permissions. Fill in its empty values:
+
+| Variable | Purpose |
+| --- | --- |
+| `PUBLIC_URL` | Public HTTPS address of this service |
+| `TELEGRAM_BOT_TOKEN` | Token supplied by BotFather |
+| `TELEGRAM_WEBHOOK_SECRET` | Random secret protecting Telegram callbacks |
+| `TELEGRAM_ADMIN_IDS` | Comma-separated allowlist of Telegram user IDs |
+| `GITHUB_APP_ID` | Numeric runtime GitHub App ID |
+| `GITHUB_APP_PRIVATE_KEY_BASE64` | Base64-encoded GitHub App private key |
+| `GITHUB_WEBHOOK_SECRET` | Random secret protecting GitHub callbacks |
+| `OPENAI_API_KEY` | Multimodal intake and Codex, when selected |
+| `ANTHROPIC_API_KEY` | Required when Claude is selected |
+| `CURSOR_API_KEY` | Required when Cursor is selected |
+| `FLOW_AGENT` | Optional single provider for every AI role |
+| `FLOW_BUILDER` | Builder in split-provider mode |
+| `FLOW_REVIEWER` | Reviewer and visual-QA provider in split mode |
+| `FLOW_CODEOWNERS` | Required human GitHub users or teams |
+| `FLOW_MAX_FIX_ROUNDS` | Maximum automatic repair attempts; default `2` |
+
+Generate the two webhook secrets independently:
+
+```sh
+openssl rand -hex 32
+```
+
+Convert the downloaded GitHub App key to one line:
+
+```sh
+node -e "process.stdout.write(require('fs').readFileSync('YOUR-KEY.pem').toString('base64'))"
+```
+
+CODEOWNERS examples:
+
+```dotenv
+FLOW_CODEOWNERS=@octocat
+FLOW_CODEOWNERS=@your-org/platform-team,@release-owner
+```
+
+OpenAI is always required for Telegram transcription and multimodal planning. In single-provider mode, the chosen vendor runs each role in a separate invocation. Split-provider mode is recommended when independent review matters more than using one vendor.
+
+Validate the configuration:
+
+```sh
+flow-ai doctor
+```
+
+## 4. Run the service
+
+From the Flow AI installation directory:
+
+```sh
+docker compose up -d --build
+docker compose ps
+```
+
+Route your public HTTPS address to port 3000. Keep the `flow-data` Docker volume: it contains the durable SQLite queue, feedback drafts, and GitHub work links.
+
+Health endpoints:
+
+```text
+GET /health/live
+GET /health/ready
+```
+
+The service registers its Telegram webhook at startup. The GitHub App webhook URL is configured in GitHub.
+
+## 5. Add a project from its own folder
+
+Authenticate GitHub CLI with an administrator account:
+
+```sh
+gh auth login
+gh auth status
+```
+
+Enter the target project and run the installer:
+
+```sh
+cd /path/to/your-project
+flow-ai repo add
+```
+
+Flow AI uses `gh repo view` to detect the repository. To configure a repository without entering its folder:
+
+```sh
+flow-ai repo add OWNER/REPO
+```
+
+The CLI prints one of two outcomes:
+
+1. The setup PR merged successfully and the merge gate is active.
+2. Existing repository protection requires human approval. Open the printed setup PR, approve and merge it, then run `flow-ai repo add` again. The second run activates the merge gate.
+
+This process does not modify the target's local working tree and does not push application feature code from your computer. Repository installation happens through GitHub's API and the reviewable setup branch.
+
+## 6. Use it from Telegram
+
+Connect a group or topic to a repository:
+
+```text
+/connect OWNER/REPO
+```
+
+Start a feedback bundle:
+
+```text
+/new
+```
+
+Now send any combination of:
+
+- Written requirements or bug reports
+- Screenshots
+- Documents
+- Voice notes
+- Ordinary videos
+- Telegram video notes or screen recordings
+
+Finish the bundle:
+
+```text
+/ship
+```
+
+Other commands:
+
+```text
+/status
+/cancel
+```
+
+Flow AI transcribes audio, samples up to 12 useful video frames, analyzes screenshots and recordings, redacts common secret patterns, and turns the bundle into a structured work plan. Telegram identities remain in private SQLite storage; GitHub receives only an opaque HMAC correlation marker.
+
+## What happens after `/ship`
+
+1. The plan becomes a GitHub parent issue.
+2. Independently deliverable work becomes GitHub sub-issues.
+3. Each ready unit enters the durable build queue.
+4. The selected builder receives the issue as untrusted requirements data.
+5. The builder edits a credential-free checkout.
+6. A fresh job validates protected paths and runs the repository's real checks.
+7. Another fresh job pushes only the verified patch to `flow/<issue-number>`.
+8. Flow AI opens one draft PR owned by the runtime App.
+9. CI, independent AI review, and real QA execute against the exact PR SHA.
+10. A failed gate creates one bounded repair attempt for that SHA.
+11. When all three gates pass, the PR becomes ready and receives `flow:human`.
+12. A configured human CODEOWNER reviews and merges it.
+
+The service ignores generic check runs, forked branches, stale SHAs, incorrect workflow paths, collaborator-dispatched runs, and PRs not created by the Flow App.
+
+## Real QA, not mock-only QA
+
+Each repository receives two contracts:
+
+- `.flow/config.json` defines install, check, QA, start, health, and protected-path rules.
+- `.flow/qa.json` defines real API probes, browser journeys, screen sizes, assertions, fonts, design tokens, and minimum control sizes.
+
+The default preset expects a Node web application on port 3000. Commands are arrays, not shell strings. This prevents feedback text from becoming executable commands.
+
+Local candidate QA:
+
+- Runs install, test, build, and the application server inside a secretless container.
+- Mounts the trusted QA contract read-only.
+- Keeps the browser harness and evidence outside the candidate's writable filesystem.
+- Calls the running application's real endpoints.
+- Drives the real UI with Playwright and Stagehand-compatible journeys.
+- Captures 390×844 mobile and 1440×900 desktop screenshots.
+- Fails for horizontal overflow, unexpected fonts, missing design tokens, undersized controls, failed assertions, or incorrect endpoint responses.
+
+If the application needs authentication, external services, or dedicated test data, use an isolated preview environment. Set the repository variable:
+
+```text
+FLOW_QA_BASE_URL=https://preview-{pr}.example.com
+```
+
+The `{pr}` placeholder becomes the pull request number. Store only dedicated low-privilege test credentials in these optional repository secrets:
+
+```text
+FLOW_QA_EMAIL
+FLOW_QA_PASSWORD
+FLOW_QA_TOKEN
+```
+
+Never use production or customer credentials. Local candidate jobs receive no repository secrets.
+
+The target application's configured start command must listen on `0.0.0.0` inside its QA container. Update `.flow/config.json` through a human-reviewed PR when the project uses another runtime, port, or command set.
+
+## Security boundaries
+
+- The runtime GitHub App has read-only Contents access and cannot edit CODEOWNERS or the merge ruleset.
+- The human GitHub CLI token is used only during explicit repository provisioning.
+- GitHub workflow permissions default to read-only.
+- Provider credentials never enter the branch-push job.
+- Candidate application code never shares a runner with preview credentials.
+- Code review runs against a fixed diff from a trusted-base checkout.
+- Review publication runs in a separate write-capable job with data-only input.
+- Workflow results require the expected App actor, triggering actor, workflow ID, path, default branch, and trusted workflow commit.
+- Required `ci`, `ai-review`, and `qa` checks are tied to the runtime App's integration ID.
+- Every generated PR requires a fresh human CODEOWNER approval.
+- Webhook receipt and job creation are committed in one database transaction.
+- Issue creation, sub-issue linking, notifications, and repair dispatches are replay-safe.
+
+No autonomous delivery system is literally infallible. The final human merge gate is intentional and should not be removed.
+
+## CLI reference
+
+```text
+flow-ai setup [--agent claude|codex|cursor]
+    Create the private service configuration once.
+
+flow-ai doctor
+    Validate configuration, repository kit, and durable storage.
+
+flow-ai repo add
+    Configure the GitHub repository associated with the current folder.
+
+flow-ai repo add OWNER/REPO
+    Configure an explicit GitHub repository.
+```
+
+The local `./flow` wrapper supports the same commands.
+
+## Updating a repository's contract
+
+Project-specific behavior belongs in the installed `.flow/` directory. Change it through a normal human-reviewed PR:
+
+- Edit `.flow/config.json` for the project's real commands and health endpoint.
+- Edit `.flow/qa.json` for real user journeys, API probes, design tokens, and fonts.
+- Keep at least one API probe, one browser journey, and both mobile and desktop viewports.
+- Keep automation definitions, CODEOWNERS, agent instructions, migrations, and QA scripts protected from generated feature changes.
+
+Mock tests remain useful, but they supplement rather than replace the live application checks.
+
+## Operations
+
+- Back up the `flow-data` Docker volume regularly.
+- Monitor `/health/ready` and container restarts.
+- Rotate provider, Telegram, and GitHub App keys periodically.
+- Review changes to pinned GitHub Actions and exact Playwright/Stagehand versions.
+- Telegram's hosted Bot API limits bot downloads to 20 MB. Use Telegram's local Bot API server if larger recordings are required.
+- Cursor's headless CLI is a vendor beta and its installer currently tracks the latest release. Treat Cursor upgrades as reviewed dependency changes.
+- Run one service replica per SQLite volume. Horizontal scaling requires replacing SQLite with a shared transactional queue.
+
+## Troubleshooting
+
+### `flow-ai repo add` cannot detect the project
+
+Confirm the folder has a GitHub remote and GitHub CLI can resolve it:
+
+```sh
+git remote -v
+gh repo view
+```
+
+Alternatively pass `OWNER/REPO` explicitly.
+
+### GitHub authentication is invalid
+
+```sh
+gh auth status
+gh auth login
+```
+
+The authenticated user must be allowed to create repository secrets, variables, labels, rulesets, branches, and pull requests.
+
+### The GitHub App cannot access the repository
+
+Install the private App on that repository and confirm its permissions match the table above.
+
+### The setup PR is waiting
+
+This is expected when the repository already protects its default branch. Have a qualified human approve and merge the printed `flow/setup` PR, then rerun:
+
+```sh
+flow-ai repo add
+```
+
+### Local QA cannot reach the application
+
+Check `.flow/config.json`:
+
+- The start command must bind to `0.0.0.0`.
+- `healthUrl` must point to the exposed local port.
+- The application must start without production secrets.
+
+Use an isolated `FLOW_QA_BASE_URL` preview when those conditions are not appropriate.
+
+## Current scope
+
+Telegram is the supported business interface in this version. The intake model is designed so Slack and Discord adapters can be added later without changing the GitHub delivery state machine.

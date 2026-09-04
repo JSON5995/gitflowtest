@@ -23,11 +23,11 @@ describe("deployment package", () => {
   it("documents the full operator path and GitHub App permissions", () => {
     const readme = readFileSync("README.md", "utf8");
 
-    expect(readme).toContain("./flow setup");
-    expect(readme).toContain("./flow repo add OWNER/REPO");
+    expect(readme).toContain("flow-ai setup");
+    expect(readme).toContain("flow-ai repo add OWNER/REPO");
     expect(readme).toContain("docker compose up -d --build");
     expect(readme).toContain("Workflow run");
-    expect(readme).toContain("Checks: Read and write");
+    expect(readme).toContain("| Checks | Read and write |");
     expect(readme).toContain("human approval");
   });
 });

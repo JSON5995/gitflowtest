@@ -4,6 +4,21 @@ import type { GitHubApi } from "./github.js";
 
 const execFileAsync = promisify(execFile);
 
+type GitHubCliExecutor = (
+  args: string[],
+  cwd: string,
+) => Promise<{ stdout: string }>;
+
+const executeGitHubCli: GitHubCliExecutor = async (args, cwd) => {
+  const { stdout } = await execFileAsync("gh", args, {
+    cwd,
+    encoding: "utf8",
+    timeout: 10_000,
+    maxBuffer: 64 * 1024,
+  });
+  return { stdout };
+};
+
 type TokenApiOptions = { token: string; fetch?: typeof fetch };
 
 export const readGitHubCliToken = async (): Promise<string> => {
@@ -15,6 +30,21 @@ export const readGitHubCliToken = async (): Promise<string> => {
   const token = stdout.trim();
   if (!token) throw new Error("GitHub CLI did not return an authentication token");
   return token;
+};
+
+export const readCurrentGitHubRepository = async (
+  cwd: string,
+  execute: GitHubCliExecutor = executeGitHubCli,
+): Promise<string> => {
+  const { stdout } = await execute(
+    ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+    cwd,
+  );
+  const repository = stdout.trim();
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) {
+    throw new Error("The current folder is not connected to a GitHub repository");
+  }
+  return repository;
 };
 
 export const createGitHubTokenApi = (options: TokenApiOptions): GitHubApi => ({

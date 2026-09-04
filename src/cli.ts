@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { constants } from "node:fs";
 import { chmod, copyFile, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -5,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { ZodError } from "zod";
 import { loadConfig } from "./config.js";
 import { createGitHubAppAccess } from "./github-app.js";
-import { createGitHubTokenApi, readGitHubCliToken } from "./github-token.js";
+import { createGitHubTokenApi, readCurrentGitHubRepository, readGitHubCliToken } from "./github-token.js";
 import { loadRepositoryKit, provisionRepository } from "./provision.js";
 import { openStorage } from "./storage.js";
 
@@ -31,15 +33,15 @@ const defaultContext: CliContext = {
 
 const help = `Flow AI
 
-  ./flow setup [--agent NAME]  Create .env; NAME is claude, codex, or cursor
-  ./flow doctor                Validate configuration and local storage
-  ./flow repo add OWNER/REPO   Install workflows, secrets, labels, and merge rules`;
+  flow-ai setup [--agent NAME]  Create the service configuration
+  flow-ai doctor                Validate configuration and local storage
+  flow-ai repo add [OWNER/REPO] Configure the current GitHub project, or an explicit repository`;
 
 const setup = async (context: CliContext, agent?: string): Promise<number> => {
   if (agent && !["claude", "codex", "cursor"].includes(agent)) {
     throw new Error("--agent must be claude, codex, or cursor");
   }
-  const destination = join(context.cwd, ".env");
+  const destination = join(context.projectRoot, ".env");
   try {
     await copyFile(context.envTemplatePath, destination, constants.COPYFILE_EXCL);
     await chmod(destination, 0o600);
@@ -50,7 +52,7 @@ const setup = async (context: CliContext, agent?: string): Promise<number> => {
         : `${template.trimEnd()}\nFLOW_AGENT=${agent}\n`;
       await writeFile(destination, configured);
     }
-    context.stdout(`Created ${destination}. Add the credential values, then run ./flow doctor.`);
+    context.stdout(`Created ${destination}. Add the credential values, then run flow-ai doctor.`);
   } catch (error) {
     const code = typeof error === "object" && error !== null && "code" in error ? error.code : null;
     if (code !== "EEXIST") throw error;
@@ -73,20 +75,20 @@ const doctor = async (context: CliContext): Promise<number> => {
 };
 
 const addRepository = async (repository: string | undefined, context: CliContext): Promise<number> => {
-  if (!repository) throw new Error("Usage: ./flow repo add OWNER/REPO");
+  const targetRepository = repository ?? await readCurrentGitHubRepository(context.cwd);
   const config = loadConfig(context.env);
   const access = createGitHubAppAccess({
     appId: config.github.appId,
     privateKey: config.github.privateKey,
   });
   const [, appSlug, files, provisioningToken] = await Promise.all([
-    access.getInstallationId(repository),
+    access.getInstallationId(targetRepository),
     access.getAppSlug(),
     loadRepositoryKit(join(context.projectRoot, "repo-kit")),
     readGitHubCliToken(),
   ]);
   const result = await provisionRepository({
-    repository,
+    repository: targetRepository,
     api: createGitHubTokenApi({ token: provisioningToken }),
     files,
     secrets: {
@@ -104,10 +106,10 @@ const addRepository = async (repository: string | undefined, context: CliContext
     checkIntegrationId: config.github.appId,
   });
   if (result.mergeGateInstalled) {
-    context.stdout(`Installed Flow AI in ${repository}@${result.defaultBranch} (${result.commitSha.slice(0, 12)}).`);
-    context.stdout(`In Telegram, run /connect ${repository}, send feedback, then /ship.`);
+    context.stdout(`Installed Flow AI in ${targetRepository}@${result.defaultBranch} (${result.commitSha.slice(0, 12)}).`);
+    context.stdout(`In Telegram, run /connect ${targetRepository}, send feedback, then /ship.`);
   } else {
-    context.stdout(`Setup pull request is waiting for the repository's required approval: ${result.setupPullRequestUrl ?? repository}`);
+    context.stdout(`Setup pull request is waiting for the repository's required approval: ${result.setupPullRequestUrl ?? targetRepository}`);
     context.stdout("After it is merged, run the same repo add command once to install the human merge gate.");
   }
   return 0;
@@ -143,6 +145,12 @@ export const runCli = async (
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
 if (invokedPath === fileURLToPath(import.meta.url)) {
+  try {
+    process.loadEnvFile(join(projectRoot, ".env"));
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error ? error.code : null;
+    if (code !== "ENOENT") throw error;
+  }
   runCli(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   }).catch((error: unknown) => {

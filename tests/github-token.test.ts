@@ -1,7 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { createGitHubTokenApi } from "../src/github-token.js";
+import { createGitHubTokenApi, readCurrentGitHubRepository } from "../src/github-token.js";
 
 describe("GitHub CLI provisioning API", () => {
+  it("detects the GitHub repository for the current project folder", async () => {
+    const calls: Array<{ args: string[]; cwd: string }> = [];
+    const repository = await readCurrentGitHubRepository("/projects/store", async (args, cwd) => {
+      calls.push({ args, cwd });
+      return { stdout: "acme/store\n" };
+    });
+
+    expect(repository).toBe("acme/store");
+    expect(calls).toEqual([{
+      args: ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+      cwd: "/projects/store",
+    }]);
+  });
+
   it("uses the CLI token as a bearer credential and expands REST routes safely", async () => {
     let url = "";
     let authorization = "";

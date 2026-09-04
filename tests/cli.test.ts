@@ -1,9 +1,9 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runCli } from "../src/cli.js";
+import { isDirectCliInvocation, runCli } from "../src/cli.js";
 
 const cleanupPaths: string[] = [];
 
@@ -12,6 +12,17 @@ afterEach(async () => {
 });
 
 describe("Flow CLI", () => {
+  it("recognizes execution through a global package symlink", () => {
+    const directory = mkdtempSync(join(tmpdir(), "gitflow-cli-link-"));
+    cleanupPaths.push(directory);
+    const cliPath = join(directory, "cli.js");
+    const linkedPath = join(directory, "flow-ai");
+    writeFileSync(cliPath, "#!/usr/bin/env node\n");
+    symlinkSync(cliPath, linkedPath);
+
+    expect(isDirectCliInvocation(linkedPath, `file://${cliPath}`)).toBe(true);
+  });
+
   it("creates an editable environment file without overwriting an existing one", async () => {
     const directory = mkdtempSync(join(tmpdir(), "gitflow-cli-"));
     cleanupPaths.push(directory);

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { constants } from "node:fs";
+import { constants, realpathSync } from "node:fs";
 import { chmod, copyFile, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,15 @@ const defaultContext: CliContext = {
   envTemplatePath: join(projectRoot, ".env.example"),
   stdout: console.log,
   stderr: console.error,
+};
+
+export const isDirectCliInvocation = (invokedPath: string, moduleUrl: string): boolean => {
+  if (!invokedPath) return false;
+  try {
+    return realpathSync(resolve(invokedPath)) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return resolve(invokedPath) === fileURLToPath(moduleUrl);
+  }
 };
 
 const help = `Flow AI
@@ -143,8 +152,8 @@ export const runCli = async (
   }
 };
 
-const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
-if (invokedPath === fileURLToPath(import.meta.url)) {
+const invokedPath = process.argv[1] ?? "";
+if (isDirectCliInvocation(invokedPath, import.meta.url)) {
   try {
     process.loadEnvFile(join(projectRoot, ".env"));
   } catch (error) {

@@ -16,6 +16,16 @@ describe("GitHub CLI provisioning API", () => {
     }]);
   });
 
+  it("explains how to connect a folder with no GitHub remote", async () => {
+    await expect(readCurrentGitHubRepository("/projects/store", async () => {
+      throw new Error("no git remotes found");
+    })).rejects.toThrow([
+      "No GitHub remote was found for /projects/store.",
+      "git remote add origin https://github.com/OWNER/REPO.git",
+      "flow-ai repo add OWNER/REPO",
+    ].join("\n"));
+  });
+
   it("uses the CLI token as a bearer credential and expands REST routes safely", async () => {
     let url = "";
     let authorization = "";

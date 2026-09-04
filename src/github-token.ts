@@ -36,10 +36,25 @@ export const readCurrentGitHubRepository = async (
   cwd: string,
   execute: GitHubCliExecutor = executeGitHubCli,
 ): Promise<string> => {
-  const { stdout } = await execute(
-    ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
-    cwd,
-  );
+  let stdout: string;
+  try {
+    ({ stdout } = await execute(
+      ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+      cwd,
+    ));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/no git remotes? found/i.test(message)) {
+      throw new Error([
+        `No GitHub remote was found for ${cwd}.`,
+        "git remote add origin https://github.com/OWNER/REPO.git",
+        "flow-ai repo add OWNER/REPO",
+        "If origin is your fork, add the source project separately:",
+        "git remote add upstream https://github.com/ORIGINAL_OWNER/REPO.git",
+      ].join("\n"));
+    }
+    throw error;
+  }
   const repository = stdout.trim();
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) {
     throw new Error("The current folder is not connected to a GitHub repository");

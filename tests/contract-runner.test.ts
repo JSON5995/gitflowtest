@@ -36,6 +36,14 @@ const validConfig = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("repository contract runner", () => {
+  it("protects Cursor guidance from agent-authored changes", () => {
+    const config = JSON.parse(readFileSync(resolve("repo-kit/.flow/config.json"), "utf8")) as {
+      protectedPaths: string[];
+    };
+
+    expect(config.protectedPaths).toContain(".cursor/rules/flow.mdc");
+  });
+
   it("passes metacharacters and environment references literally", () => {
     const result = runContract(validConfig(), "checks");
 

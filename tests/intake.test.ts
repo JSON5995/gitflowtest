@@ -3,6 +3,7 @@ import type { FeedbackBundle, WorkPlan } from "../src/domain.js";
 import {
   WorkPlanSchema,
   buildWorkPlan,
+  createAnthropicIntakeClient,
   formatIssueBody,
   prepareFeedback,
   redactSecrets,
@@ -33,6 +34,31 @@ const validPlan = (overrides: Partial<WorkPlan> = {}): WorkPlan => ({
 });
 
 describe("intake planning", () => {
+  it("uses Anthropic's structured tool result for planning with image evidence", async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const client = createAnthropicIntakeClient({
+      apiKey: "anthropic-key",
+      model: "claude-planner",
+      fetch: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({
+          content: [{ type: "tool_use", name: "create_work_plan", input: validPlan() }],
+        }), { status: 200 });
+      },
+    });
+
+    await expect(client.createPlan({
+      submissionId: "test:anthropic-1",
+      feedback: "The save button does nothing.",
+      repository: "acme/store",
+      context: {},
+      images: ["data:image/png;base64,c2NyZWVu"],
+    })).resolves.toEqual(validPlan());
+    expect(requestBody).toMatchObject({ model: "claude-planner", tool_choice: { name: "create_work_plan" } });
+    expect(JSON.stringify(requestBody)).toContain('"type":"image"');
+    expect(JSON.stringify(requestBody)).not.toContain("test:anthropic-1");
+  });
+
   it("rejects more than four work units", () => {
     const units = Array.from({ length: 5 }, (_, index) => ({
       title: `Unit ${index + 1}`,
@@ -69,6 +95,15 @@ describe("intake planning", () => {
 
     expect(plan.needsHumanInput).toBe(true);
     expect(plan.risks).toContain("High-risk area detected in submitted feedback.");
+    expect(plan.clarifications?.[0]?.question).toMatch(/confirm/i);
+  });
+
+  it("requires a concrete clarification when the planner needs human input", () => {
+    expect(() => WorkPlanSchema.parse(validPlan({ needsHumanInput: true }))).toThrow(/clarification/i);
+    expect(WorkPlanSchema.parse(validPlan({
+      needsHumanInput: true,
+      clarifications: [{ question: "Which account role should see the control?" }],
+    })).clarifications).toHaveLength(1);
   });
 
   it("forces human input when visual analysis surfaces a high-risk area", async () => {
@@ -113,12 +148,44 @@ describe("intake planning", () => {
 
     expect(images).toEqual(["data:image/png;base64,c2NyZWVu"]);
   });
+
+  it("redacts credentials copied by the vision or planning model", async () => {
+    const secret = "github_pat_abcdefghijklmnopqrstuv";
+    const model = { createPlan: async () => validPlan({
+      problem: `The screenshot displays ${secret} in the settings page.`,
+      evidence: [`Visible token: ${secret}`],
+    }) };
+
+    const plan = await buildWorkPlan(bundle("Screenshot attached"), {}, model, {
+      text: "Screenshot attached",
+      images: ["data:image/png;base64,c2NyZWVu"],
+    });
+
+    expect(JSON.stringify(plan)).not.toContain("abcdefghijklmnopqrstuv");
+    expect(JSON.stringify(plan)).toContain("REDACTED");
+  });
 });
 
 describe("feedback preparation", () => {
   it("redacts common secret forms", () => {
     expect(redactSecrets("OPENAI_API_KEY=sk-secret password: hunter2 bearer abc.def.ghi"))
       .toBe("OPENAI_API_KEY=[REDACTED] password: [REDACTED] bearer [REDACTED]");
+  });
+
+  it("redacts provider tokens, GitHub PATs, JWTs, JSON secrets, and private keys", () => {
+    const input = [
+      "sk-ant-api03_abcdefghijklmnopqrstuv",
+      "github_pat_abcdefghijklmnopqrstuv",
+      "eyJabcdefgh.ijklmnopq.rstuvwxyz",
+      '{"access_token":"top-secret-value"}',
+      "-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----",
+    ].join("\n");
+
+    const redacted = redactSecrets(input);
+
+    expect(redacted).not.toContain("abcdefghijklmnopqrstuv");
+    expect(redacted).not.toContain("top-secret-value");
+    expect(redacted).not.toContain("private-material");
   });
 
   it("rejects Telegram media over the Bot API download limit", async () => {

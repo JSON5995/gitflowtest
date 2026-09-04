@@ -38,5 +38,23 @@ export type WorkPlan = {
   nonGoals: string[];
   risks: string[];
   needsHumanInput: boolean;
+  clarifications?: ClarificationQuestion[] | undefined;
   units: WorkUnit[];
+};
+
+export type ClarificationQuestion = {
+  question: string;
+  context?: string | undefined;
+};
+
+export type ClarificationRequest = ClarificationQuestion & {
+  version: 1;
+  id: string;
+  source: "intake" | "builder";
+};
+
+export type ClarificationAnswer = {
+  version: 1;
+  id: string;
+  answer: string;
 };

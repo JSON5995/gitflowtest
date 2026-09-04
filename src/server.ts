@@ -9,6 +9,7 @@ export type ServerDependencies = {
 export const buildServer = (dependencies: ServerDependencies): FastifyInstance => {
   const server = Fastify({ logger: false });
 
+  server.get("/", async (_request, reply) => reply.redirect("/admin", 302));
   server.get("/health/live", async () => ({ ok: true }));
   server.get("/health/ready", async (_request, reply) => {
     const ready = await dependencies.isReady();

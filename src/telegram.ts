@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { FeedbackItem } from "./domain.js";
+import { redactSecrets } from "./intake.js";
 import type { Storage } from "./storage.js";
 
 const FileSchema = z.object({
@@ -47,6 +48,7 @@ export type TelegramAction =
   | { type: "new" }
   | { type: "append"; item: FeedbackItem }
   | { type: "submit" }
+  | { type: "answer"; issueNumber: number; text: string }
   | { type: "cancel" }
   | { type: "status" };
 
@@ -57,6 +59,18 @@ export type ParsedTelegramUpdate = {
   userId: string;
   messageId: number;
   action: TelegramAction;
+};
+
+const redactTelegramUpdate = (update: ParsedTelegramUpdate): ParsedTelegramUpdate => {
+  if (update.action.type === "answer") {
+    return { ...update, action: { ...update.action, text: redactSecrets(update.action.text) } };
+  }
+  if (update.action.type !== "append") return update;
+  const item = update.action.item;
+  const redacted = item.kind === "text"
+    ? { ...item, text: redactSecrets(item.text) }
+    : { ...item, ...(item.caption ? { caption: redactSecrets(item.caption) } : {}) };
+  return { ...update, action: { type: "append", item: redacted } };
 };
 
 const optionalFileFields = (file: z.infer<typeof FileSchema>) => ({
@@ -70,6 +84,14 @@ const parseTextAction = (text: string): TelegramAction | null => {
   if (connect?.[1]) return { type: "connect", repository: connect[1] };
   if (/^\/new(?:@\w+)?$/i.test(normalized)) return { type: "new" };
   if (/^\/ship(?:@\w+)?$/i.test(normalized)) return { type: "submit" };
+  const answer = normalized.match(/^\/answer(?:@\w+)?\s+#?(\d+)\s+([\s\S]{1,4000})$/i);
+  if (answer?.[1] && answer[2]) {
+    const issueNumber = Number(answer[1]);
+    const text = answer[2].trim();
+    if (Number.isSafeInteger(issueNumber) && issueNumber > 0 && text) {
+      return { type: "answer", issueNumber, text };
+    }
+  }
   if (/^\/cancel(?:@\w+)?$/i.test(normalized)) return { type: "cancel" };
   if (/^\/status(?:@\w+)?$/i.test(normalized)) return { type: "status" };
   if (normalized.startsWith("/")) return null;
@@ -195,7 +217,7 @@ export const registerTelegramRoutes = (
       hash,
       "telegram",
       `telegram:${update.updateId}`,
-      update,
+      redactTelegramUpdate(update),
     )) {
       return reply.code(200).send({ ok: true, duplicate: true });
     }
@@ -213,6 +235,21 @@ const TelegramResponseSchema = z.object({
   result: z.unknown(),
 });
 
+const telegramErrorDescription = (input: unknown, token: string): string | null => {
+  const parsed = z.object({ description: z.string().max(2_000) }).safeParse(input);
+  if (!parsed.success) return null;
+  return parsed.data.description
+    .replaceAll(token, "[REDACTED]")
+    .split("")
+    .map((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127 ? " " : character;
+    })
+    .join("")
+    .trim()
+    .slice(0, 300) || null;
+};
+
 export type TelegramClient = {
   downloadFile(fileId: string): Promise<{ bytes: Buffer; mimeType: string }>;
   sendMessage(chatId: string, topicId: string | null, text: string): Promise<void>;
@@ -229,8 +266,17 @@ export const createTelegramClient = (options: TelegramClientOptions): TelegramCl
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!response.ok) throw new Error(`Telegram ${method} failed with ${response.status}`);
-    return TelegramResponseSchema.parse(await response.json()).result;
+    let responseBody: unknown;
+    try {
+      responseBody = await response.json();
+    } catch {
+      responseBody = null;
+    }
+    if (!response.ok) {
+      const description = telegramErrorDescription(responseBody, options.token);
+      throw new Error(`Telegram ${method} failed with ${response.status}${description ? `: ${description}` : ""}`);
+    }
+    return TelegramResponseSchema.parse(responseBody).result;
   };
 
   return {

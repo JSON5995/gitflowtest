@@ -111,9 +111,13 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
 if (needsSemanticActions) {
   const { Stagehand } = await import("@browserbasehq/stagehand");
+  const configuredModel = process.env.FLOW_QA_MODEL;
+  const stagehandModel = configuredModel
+    ? configuredModel.includes("/") ? configuredModel : `${provider === "codex" ? "openai" : "anthropic"}/${configuredModel}`
+    : provider === "codex" ? "openai/gpt-5" : "anthropic/claude-sonnet-4-6";
   stagehand = new Stagehand({
     env: "LOCAL",
-    model: provider === "codex" ? "openai/gpt-5" : "anthropic/claude-sonnet-4-6",
+    model: stagehandModel,
     verbose: 0,
     localBrowserLaunchOptions: { headless: true },
   });

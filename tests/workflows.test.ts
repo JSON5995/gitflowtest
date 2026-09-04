@@ -37,6 +37,7 @@ describe("build workflow", () => {
     const job = value.jobs.build!;
     const verify = value.jobs.verify!;
     const push = value.jobs.push!;
+    const publishClarification = value.jobs.publish_clarification!;
 
     expect(Object.keys(value.on)).toEqual(["workflow_dispatch"]);
     expect(value.concurrency?.group).toContain("issue");
@@ -55,6 +56,8 @@ describe("build workflow", () => {
     expect(job.steps?.some((step) => step.uses?.startsWith("actions/create-github-app-token@"))).toBe(false);
     expect(JSON.stringify(job)).not.toContain("FLOW_GITHUB_APP_PRIVATE_KEY");
     expect(JSON.stringify(value)).toContain("Flow Build · Issue #");
+    expect(JSON.stringify(value)).toContain("Validate route inputs before any AI action");
+    expect(JSON.stringify(value.jobs.prepare)).toContain("^[A-Za-z0-9._:/-]{1,200}$");
     expect(job.steps?.map((step) => step.run ?? "").join("\n")).not.toContain("gh pr create");
     expect(job.steps?.map((step) => step.run ?? "").join("\n")).not.toMatch(/run-contract\.mjs" (?:install|checks)/);
     expect(verify.steps?.map((step) => step.run ?? "").join("\n")).toContain("run-contract.mjs\" guard");
@@ -62,6 +65,12 @@ describe("build workflow", () => {
     expect(verify.permissions).toEqual({ contents: "read" });
     expect(push.steps?.map((step) => step.run ?? "").join("\n")).not.toMatch(/npm|pnpm|yarn/);
     expect(JSON.stringify(push)).not.toContain("API_KEY");
+    expect(publishClarification.permissions).toEqual({ contents: "read", issues: "write" });
+    expect(JSON.stringify(job)).toContain(".flow-clarification.json");
+    expect(JSON.stringify(job)).toContain("clarification.mjs");
+    expect(JSON.stringify(publishClarification)).toContain("gh issue comment");
+    expect(JSON.stringify(publishClarification)).toContain("flow:blocked");
+    expect(JSON.stringify(job)).not.toContain('issues":"write');
     expect(Object.keys(value.on)).not.toContain("pull_request_target");
   });
 });
@@ -92,6 +101,7 @@ describe("review workflow", () => {
     expect(trigger.inputs).toHaveProperty("pr_number");
     expect(trigger.inputs).toHaveProperty("head_sha");
     expect(JSON.stringify(value)).toContain("AI Review · PR #");
+    expect(JSON.stringify(value)).toContain("Validate route inputs before any AI action");
     expect(value.concurrency?.["cancel-in-progress"]).toBe(true);
     expect(value.concurrency?.group).toContain("pull_request");
     expect(job.permissions).toEqual({ contents: "read" });
@@ -108,6 +118,7 @@ describe("review workflow", () => {
     expect(commands).toContain("cursor-agent");
     expect(commands).toContain("parse-cursor-result.mjs");
     expect(collectCommands).toContain("gh api");
+    expect(collectCommands).toContain("^[A-Za-z0-9._:/-]{1,200}$");
     expect(commands).toContain("flow-review-input/check-review.mjs");
     expect(JSON.stringify(collect)).not.toContain("API_KEY");
     expect(JSON.stringify(job)).toContain("needs.collect.outputs.base_sha");
@@ -186,6 +197,8 @@ describe("QA workflow", () => {
     expect(commands).toContain("--prefix \"$RUNNER_TEMP/flow-qa-tools\"");
     expect(commands).toContain("install --with-deps chromium");
     expect(commands).toContain("healthUrl");
+    expect(JSON.stringify(value)).toContain("Validate route inputs before any AI action");
+    expect(commands).toContain("^[A-Za-z0-9._:/-]{1,200}$");
     expect(commands).toContain("/flow/run-contract.mjs start");
     expect(commands).toContain("docker run --rm");
     expect(commands).toContain(":/flow/run-contract.mjs:ro");

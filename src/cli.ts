@@ -10,7 +10,7 @@ import { loadConfig } from "./config.js";
 import { createGitHubAppAccess } from "./github-app.js";
 import { createGitHubTokenApi, readCurrentGitHubRepository, readGitHubCliToken } from "./github-token.js";
 import { ensurePrerequisites } from "./prerequisites.js";
-import { loadRepositoryKit, provisionRepository } from "./provision.js";
+import { loadRepositoryKit, provisionRepository, verifyInstalledRepositoryKit } from "./provision.js";
 import { deployToRailway } from "./railway.js";
 import { openStorage } from "./storage.js";
 
@@ -67,29 +67,43 @@ const setEnvironmentValue = (
   return contents.replace(pattern, `${key}=${value}`);
 };
 
+const credentialKeyPattern = /^[A-Za-z0-9_-]{43}$/;
+const malformedCredentialKeyMessage = [
+  "FLOW_CREDENTIAL_KEY is malformed.",
+  "Back up your database and current .env/key before changing it.",
+  "Then clear only the invalid FLOW_CREDENTIAL_KEY line (set it to FLOW_CREDENTIAL_KEY=) and rerun `flow init`.",
+  "Flow will generate a 32-byte base64url key; replacing this key makes existing encrypted provider credentials unreadable.",
+].join(" ");
+
 const initialize = async (context: CliContext, agent?: string): Promise<number> => {
   if (agent && !["claude", "codex", "cursor"].includes(agent)) {
     throw new Error("--agent must be claude, codex, or cursor");
   }
   await context.ensurePrerequisites({ stdout: context.stdout });
   const destination = join(context.projectRoot, ".env");
+  let created = false;
   try {
     await copyFile(context.envTemplatePath, destination, constants.COPYFILE_EXCL);
-    await chmod(destination, 0o600);
-    let configured = await readFile(destination, "utf8");
-    for (const key of ["TELEGRAM_WEBHOOK_SECRET", "GITHUB_WEBHOOK_SECRET", "FLOW_ADMIN_PASSWORD"]) {
-      configured = setEnvironmentValue(configured, key, randomBytes(32).toString("base64url"));
-    }
-    if (agent) {
-      configured = setEnvironmentValue(configured, "FLOW_AGENT", agent, true);
-    }
-    await writeFile(destination, configured);
-    context.stdout(`Created ${destination}. Add the credential values, then run flow doctor.`);
+    created = true;
   } catch (error) {
     const code = typeof error === "object" && error !== null && "code" in error ? error.code : null;
     if (code !== "EEXIST") throw error;
-    context.stdout(`${destination} already exists; it was not changed.`);
   }
+  const original = await readFile(destination, "utf8");
+  let configured = original;
+  for (const key of ["TELEGRAM_WEBHOOK_SECRET", "GITHUB_WEBHOOK_SECRET", "FLOW_ADMIN_PASSWORD", "FLOW_CREDENTIAL_KEY"]) {
+    configured = setEnvironmentValue(configured, key, randomBytes(32).toString("base64url"));
+  }
+  if (agent) configured = setEnvironmentValue(configured, "FLOW_AGENT", agent, true);
+  if (configured !== original) await writeFile(destination, configured, { mode: 0o600 });
+  await chmod(destination, 0o600);
+  const credentialKey = configured.match(/^FLOW_CREDENTIAL_KEY=(.*)$/m)?.[1]?.trim();
+  if (credentialKey && !credentialKeyPattern.test(credentialKey)) {
+    throw new Error(malformedCredentialKeyMessage);
+  }
+  if (created) context.stdout(`Created ${destination}. Add the GitHub App and Telegram bootstrap values, then run flow doctor.`);
+  else if (configured !== original) context.stdout(`${destination} already existed; missing generated security values were added without changing existing values.`);
+  else context.stdout(`${destination} already exists and is ready.`);
   return 0;
 };
 
@@ -113,29 +127,41 @@ const addRepository = async (repository: string | undefined, context: CliContext
     appId: config.github.appId,
     privateKey: config.github.privateKey,
   });
-  const [, appSlug, files, provisioningToken] = await Promise.all([
+  const [, appSlug, loadedFiles, provisioningToken] = await Promise.all([
     access.getInstallationId(targetRepository),
     access.getAppSlug(),
     loadRepositoryKit(join(context.projectRoot, "repo-kit")),
     readGitHubCliToken(),
   ]);
+  if (config.flow.codeowners.length === 0) {
+    throw new Error("FLOW_CODEOWNERS is required for CLI repository setup. Or add the repository from Flow Admin and enter reviewers there.");
+  }
+  const files = Object.fromEntries(Object.entries(loadedFiles).map(([path, content]) => [
+    path,
+    content.replaceAll("{{FLOW_CODEOWNERS}}", config.flow.codeowners.join(" ")),
+  ]));
+  const api = createGitHubTokenApi({ token: provisioningToken });
+  const activationAuthorized = await verifyInstalledRepositoryKit({
+    repository: targetRepository,
+    api,
+    files,
+    codeowners: config.flow.codeowners,
+  });
   const result = await provisionRepository({
     repository: targetRepository,
-    api: createGitHubTokenApi({ token: provisioningToken }),
+    api,
     files,
     secrets: {
-      OPENAI_API_KEY: config.providers.openaiApiKey,
+      ...(config.providers.openaiApiKey ? { OPENAI_API_KEY: config.providers.openaiApiKey } : {}),
       ...(config.providers.anthropicApiKey ? { ANTHROPIC_API_KEY: config.providers.anthropicApiKey } : {}),
       ...(config.providers.cursorApiKey ? { CURSOR_API_KEY: config.providers.cursorApiKey } : {}),
     },
     variables: {
-      FLOW_BUILDER: config.flow.builder,
-      FLOW_REVIEWER: config.flow.reviewer,
-      FLOW_QA_PROVIDER: config.flow.qa,
       FLOW_BOT_LOGIN: `${appSlug}[bot]`,
     },
     codeowners: config.flow.codeowners,
     checkIntegrationId: config.github.appId,
+    activationAuthorized,
   });
   if (result.mergeGateInstalled) {
     context.stdout(`Installed Flow in ${targetRepository}@${result.defaultBranch} (${result.commitSha.slice(0, 12)}).`);
@@ -181,9 +207,13 @@ const hostOnRailway = async (argv: string[], context: CliContext): Promise<numbe
   return 0;
 };
 
-const safeError = (error: unknown): string => {
+const safeError = (error: unknown, env: Record<string, string | undefined> = process.env): string => {
   if (error instanceof ZodError) {
     const fields = [...new Set(error.issues.map((issue) => String(issue.path[0] ?? "configuration")))];
+    if (fields.includes("FLOW_CREDENTIAL_KEY")) {
+      if (env.FLOW_CREDENTIAL_KEY?.trim()) return malformedCredentialKeyMessage;
+      return "Configuration is incomplete: FLOW_CREDENTIAL_KEY must be 32 random bytes encoded as 43-character base64url. Run `flow init` to add the missing key.";
+    }
     return `Configuration is incomplete or invalid: ${fields.join(", ")}`;
   }
   return error instanceof Error ? error.message : String(error);
@@ -206,7 +236,7 @@ export const runCli = async (
     context.stdout(help);
     return argv.length === 0 || argv[0] === "help" || argv[0] === "--help" ? 0 : 1;
   } catch (error) {
-    context.stderr(safeError(error));
+    context.stderr(safeError(error, context.env));
     return 1;
   }
 };

@@ -18,5 +18,6 @@ export const validEnv = (overrides: Record<string, string | undefined> = {}) => 
   FLOW_MAX_FIX_ROUNDS: "2",
   FLOW_ADMIN_USERNAME: "operator",
   FLOW_ADMIN_PASSWORD: "a-strong-test-password",
+  FLOW_CREDENTIAL_KEY: Buffer.alloc(32, 7).toString("base64url"),
   ...overrides,
 });

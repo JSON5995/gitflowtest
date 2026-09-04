@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createOpenAIIntakeClient } from "../src/intake.js";
+import { registerTelegramWebhook } from "../src/index.js";
 import { createTelegramClient } from "../src/telegram.js";
+import { loadConfig } from "../src/config.js";
+import { validEnv } from "./helpers.js";
 
 const samplePlan = {
   title: "Repair checkout",
@@ -27,6 +30,7 @@ describe("OpenAI intake client", () => {
     const client = createOpenAIIntakeClient({ apiKey: "secret-key", fetch: fakeFetch });
 
     const result = await client.createPlan({
+      submissionId: "test:openai-1",
       feedback: "Fix checkout",
       repository: "acme/store",
       context: { fileTree: ["src/checkout.ts"] },
@@ -82,5 +86,45 @@ describe("Telegram API client", () => {
 
     expect(file).toEqual({ bytes: Buffer.from("voice"), mimeType: "audio/ogg" });
     expect(requests).toHaveLength(2);
+  });
+
+  it("reports Telegram's sanitized API reason without exposing the bot token", async () => {
+    const token = "123456:super-secret-token";
+    const client = createTelegramClient({
+      token,
+      fetch: async () => new Response(JSON.stringify({
+        ok: false,
+        description: `Bad Request: bad webhook URL for ${token}`,
+      }), { status: 400, headers: { "content-type": "application/json" } }),
+    });
+
+    await expect(client.setWebhook("https://invalid.example", "secret"))
+      .rejects.toThrow("Telegram setWebhook failed with 400: Bad Request: bad webhook URL for [REDACTED]");
+    await expect(client.setWebhook("https://invalid.example", "secret"))
+      .rejects.not.toThrow(token);
+  });
+});
+
+describe("Telegram startup", () => {
+  it("keeps local Admin running when development webhook registration fails", async () => {
+    const warnings: string[] = [];
+    const config = loadConfig(validEnv({ NODE_ENV: "development", PUBLIC_URL: "http://localhost:3000" }));
+
+    await expect(registerTelegramWebhook({
+      setWebhook: async () => { throw new Error("Telegram setWebhook failed with 400: HTTPS URL required"); },
+    }, config, (message) => warnings.push(message))).resolves.toBeUndefined();
+
+    expect(warnings.join("\n")).toContain("Admin remains available");
+  });
+
+  it("keeps webhook registration strict in production", async () => {
+    const config = loadConfig(validEnv({
+      NODE_ENV: "production",
+      PUBLIC_URL: "https://flow.example.test",
+    }));
+
+    await expect(registerTelegramWebhook({
+      setWebhook: async () => { throw new Error("Telegram setWebhook failed with 400"); },
+    }, config, () => undefined)).rejects.toThrow("Telegram setWebhook failed with 400");
   });
 });

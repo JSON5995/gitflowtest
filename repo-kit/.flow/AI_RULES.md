@@ -12,3 +12,4 @@
 10. Never merge, approve, force-push, rewrite shared history, or bypass repository rules.
 11. For changed UI or API behavior, tests must exercise the running application and real configured endpoint. Do not intercept the acceptance path, replace it with a mock response, or claim screenshots as functional proof.
 12. UI evidence must cover the configured mobile and desktop viewports and preserve the project's design tokens, fonts, interaction sizes, and overflow rules.
+13. If one missing fact makes a correct implementation impossible, do not guess. Create only `.flow-clarification.json` with `{ "version": 1, "question": "one concrete question", "context": "optional short context" }`. Do not include code changes with a clarification request.

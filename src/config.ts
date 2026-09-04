@@ -23,51 +23,47 @@ const EnvironmentSchema = z
     GITHUB_APP_ID: z.coerce.number().int().positive(),
     GITHUB_APP_PRIVATE_KEY_BASE64: z.string().min(1),
     GITHUB_WEBHOOK_SECRET: z.string().min(1),
-    OPENAI_API_KEY: z.string().min(1),
+    OPENAI_API_KEY: OptionalSecretSchema,
     ANTHROPIC_API_KEY: OptionalSecretSchema,
     CURSOR_API_KEY: OptionalSecretSchema,
     FLOW_AGENT: OptionalProviderSchema,
     FLOW_BUILDER: ProviderSchema.default("codex"),
     FLOW_REVIEWER: ProviderSchema.default("claude"),
-    FLOW_CODEOWNERS: z.string().min(1),
+    FLOW_CODEOWNERS: z.string().optional().default(""),
     FLOW_MAX_FIX_ROUNDS: z.coerce.number().int().min(0).max(5).default(2),
     FLOW_ADMIN_USERNAME: z.string().min(1).max(64).default("flow"),
     FLOW_ADMIN_PASSWORD: z.string().min(16),
+    FLOW_CREDENTIAL_KEY: z.string().regex(/^[A-Za-z0-9_-]{43}$/, "must be a 32-byte base64url value"),
   })
   .superRefine((value, context) => {
-    if (value.NODE_ENV !== "test" && !value.PUBLIC_URL.startsWith("https://")) {
-      context.addIssue({ code: "custom", path: ["PUBLIC_URL"], message: "PUBLIC_URL must use HTTPS" });
-    }
-    const builder = value.FLOW_AGENT ?? value.FLOW_BUILDER;
-    const reviewer = value.FLOW_AGENT ?? value.FLOW_REVIEWER;
-    if (!value.FLOW_AGENT && builder === reviewer) {
+    const publicUrl = new URL(value.PUBLIC_URL);
+    const developmentLocal = value.NODE_ENV === "development"
+      && publicUrl.protocol === "http:"
+      && ["localhost", "127.0.0.1"].includes(publicUrl.hostname);
+    if (value.NODE_ENV !== "test" && publicUrl.protocol !== "https:" && !developmentLocal) {
       context.addIssue({
         code: "custom",
-        path: ["FLOW_REVIEWER"],
-        message: "Builder and reviewer providers must differ",
+        path: ["PUBLIC_URL"],
+        message: "PUBLIC_URL must use HTTPS, except localhost in development",
       });
     }
-    if (
-      (builder === "cursor" || reviewer === "cursor") &&
-      !value.CURSOR_API_KEY
-    ) {
+    if (value.NODE_ENV !== "test" && /(^|\.)example\.(?:com|net|org)$/i.test(publicUrl.hostname)) {
       context.addIssue({
         code: "custom",
-        path: ["CURSOR_API_KEY"],
-        message: "CURSOR_API_KEY is required when Cursor is selected",
+        path: ["PUBLIC_URL"],
+        message: "PUBLIC_URL is still a placeholder; use your Railway domain or HTTPS tunnel URL",
       });
     }
-    if ((builder === "claude" || reviewer === "claude") && !value.ANTHROPIC_API_KEY) {
+    if (publicUrl.username || publicUrl.password || publicUrl.search || publicUrl.hash || !["", "/"].includes(publicUrl.pathname)) {
       context.addIssue({
         code: "custom",
-        path: ["ANTHROPIC_API_KEY"],
-        message: "ANTHROPIC_API_KEY is required when Claude is selected",
+        path: ["PUBLIC_URL"],
+        message: "PUBLIC_URL must be a bare public origin without credentials, path, query, or fragment",
       });
     }
     const codeowners = value.FLOW_CODEOWNERS.split(/[\s,]+/).filter(Boolean);
     if (
-      codeowners.length === 0
-      || codeowners.some((entry) => !/^@[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?$/.test(entry))
+      codeowners.some((entry) => !/^@[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?$/.test(entry))
     ) {
       context.addIssue({
         code: "custom",
@@ -84,7 +80,7 @@ export type AppConfig = {
   databasePath: string;
   telegram: { botToken: string; webhookSecret: string; adminIds: string[] };
   github: { appId: number; privateKey: string; webhookSecret: string };
-  providers: { openaiApiKey: string; anthropicApiKey?: string; cursorApiKey?: string };
+  providers: { openaiApiKey?: string; anthropicApiKey?: string; cursorApiKey?: string };
   flow: {
     builder: Provider;
     reviewer: Provider;
@@ -93,6 +89,7 @@ export type AppConfig = {
     maxFixRounds: number;
   };
   admin: { username: string; password: string };
+  credentialKey: Buffer;
 };
 
 export const loadConfig = (env: Record<string, string | undefined>): AppConfig => {
@@ -101,6 +98,7 @@ export const loadConfig = (env: Record<string, string | undefined>): AppConfig =
   const reviewer = value.FLOW_AGENT ?? value.FLOW_REVIEWER;
   const cursor = value.CURSOR_API_KEY ? { cursorApiKey: value.CURSOR_API_KEY } : {};
   const anthropic = value.ANTHROPIC_API_KEY ? { anthropicApiKey: value.ANTHROPIC_API_KEY } : {};
+  const openai = value.OPENAI_API_KEY ? { openaiApiKey: value.OPENAI_API_KEY } : {};
 
   return {
     environment: value.NODE_ENV,
@@ -118,7 +116,7 @@ export const loadConfig = (env: Record<string, string | undefined>): AppConfig =
       webhookSecret: value.GITHUB_WEBHOOK_SECRET,
     },
     providers: {
-      openaiApiKey: value.OPENAI_API_KEY,
+      ...openai,
       ...anthropic,
       ...cursor,
     },
@@ -133,5 +131,6 @@ export const loadConfig = (env: Record<string, string | undefined>): AppConfig =
       username: value.FLOW_ADMIN_USERNAME,
       password: value.FLOW_ADMIN_PASSWORD,
     },
+    credentialKey: Buffer.from(value.FLOW_CREDENTIAL_KEY, "base64url"),
   };
 };

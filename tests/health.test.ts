@@ -8,6 +8,16 @@ afterEach(async () => {
 });
 
 describe("health endpoints", () => {
+  it("redirects the root URL to the Admin interface", async () => {
+    const server = buildServer({ isReady: () => true });
+    servers.push(server);
+
+    const response = await server.inject({ method: "GET", url: "/" });
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("/admin");
+  });
+
   it("reports liveness without consulting dependencies", async () => {
     const server = buildServer({ isReady: () => false });
     servers.push(server);

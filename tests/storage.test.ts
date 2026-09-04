@@ -1,10 +1,11 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { openStorage, type Storage } from "../src/storage.js";
+import type { UsageReservationRequest } from "../src/provider-router.js";
 
 const cleanupPaths: string[] = [];
 const storages: Storage[] = [];
@@ -175,6 +176,42 @@ describe("storage", () => {
     expect(storage.getWorkByPullRequest("acme/store", 12)).toEqual(linked);
   });
 
+  it("atomically resumes only the matching kind of blocked work once", () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+    storage.linkWork({
+      repository: "acme/store",
+      issueNumber: 17,
+      chatId: "-100",
+      topicId: null,
+      pullRequestNumber: null,
+      providerJobId: null,
+      fixRounds: 0,
+      state: "blocked",
+      headSha: null,
+      repairHeadSha: null,
+      passedChecks: [],
+      blockReason: "clarification",
+      clarificationId: "builder:123:17",
+    }, 1_000);
+
+    expect(storage.resumeBlockedWork(
+      "acme/store", 17, "route", "build", "wrong-reason", { repository: "acme/store", issueNumber: 17 }, 2_000,
+    )).toBe(false);
+    expect(storage.resumeBlockedWork(
+      "acme/store", 17, "clarification", "build", "answer-once", { repository: "acme/store", issueNumber: 17 }, 2_000,
+    )).toBe(true);
+    expect(storage.resumeBlockedWork(
+      "acme/store", 17, "clarification", "build", "answer-twice", { repository: "acme/store", issueNumber: 17 }, 2_001,
+    )).toBe(false);
+    expect(storage.getWorkByIssue("acme/store", 17)).toMatchObject({
+      state: "ready",
+      blockReason: null,
+      clarificationId: null,
+    });
+    expect(storage.claimJob(2_000)?.idempotencyKey).toBe("answer-once");
+  });
+
   it("upgrades a v1 work-links table without losing existing records", () => {
     const directory = mkdtempSync(join(tmpdir(), "gitflow-storage-"));
     cleanupPaths.push(directory);
@@ -262,5 +299,126 @@ describe("storage", () => {
     expect(serialized).not.toContain("-100987654321");
     expect(serialized).not.toContain("provider-secret");
     expect(serialized).not.toContain("private-sha");
+  });
+
+  it("persists sealed provider credentials without exposing them in admin data", () => {
+    const directory = mkdtempSync(join(tmpdir(), "flow-control-storage-"));
+    cleanupPaths.push(directory);
+    const databasePath = join(directory, "flow.db");
+    const storage = openStorage(databasePath);
+    storages.push(storage);
+
+    storage.setProviderCredential("codex", {
+      sealed: "v1.iv.tag.ciphertext-not-the-api-key",
+      verifiedAt: "2026-09-04T12:00:00.000Z",
+      updatedAt: "2026-09-04T12:00:00.000Z",
+    });
+
+    expect(storage.getProviderCredential("codex")).toEqual({
+      sealed: "v1.iv.tag.ciphertext-not-the-api-key",
+      verifiedAt: "2026-09-04T12:00:00.000Z",
+      updatedAt: "2026-09-04T12:00:00.000Z",
+    });
+    expect(JSON.stringify(storage.getAdminSummary())).not.toContain("ciphertext-not-the-api-key");
+    storage.close();
+    storages.splice(storages.indexOf(storage), 1);
+
+    const bytes = readFileSync(databasePath);
+    expect(bytes.includes(Buffer.from("sk-live-secret"))).toBe(false);
+  });
+
+  it("persists routing settings and multiple managed repositories", () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+    const settings = {
+      candidates: [{
+        id: "codex-frontier",
+        provider: "codex" as const,
+        model: "gpt-codex-model",
+        tier: "frontier" as const,
+        enabled: true,
+        inputMicrosPerMillionTokens: 2_000_000,
+        outputMicrosPerMillionTokens: 10_000_000,
+      }],
+      policy: {
+        maxTransientRetriesPerCandidate: 2,
+        baseBackoffMs: 10_000,
+        maxBackoffMs: 120_000,
+        jitterRatio: 0.2,
+        reservationTtlMs: 7_200_000,
+        limits: {
+          perJobTokens: 250_000,
+          perJobCostMicros: 20_000_000,
+          monthlyTokens: 25_000_000,
+          monthlyCostMicros: 1_000_000_000,
+        },
+      },
+    };
+
+    storage.setRoutingSettings(settings, 1_000);
+    storage.saveManagedRepository({
+      repository: "acme/web",
+      installationId: 11,
+      codeowners: ["@acme/platform"],
+      setupPullRequestUrl: "https://github.com/acme/web/pull/7",
+      mergeGateInstalled: false,
+      updatedAt: "1970-01-01T00:00:01.000Z",
+    });
+    storage.saveManagedRepository({
+      repository: "acme/api",
+      installationId: 12,
+      codeowners: ["@acme/platform", "@release-owner"],
+      setupPullRequestUrl: null,
+      mergeGateInstalled: true,
+      updatedAt: "1970-01-01T00:00:02.000Z",
+    });
+
+    expect(storage.getRoutingSettings()).toEqual(settings);
+    expect(storage.listManagedRepositories().map((item) => item.repository)).toEqual(["acme/api", "acme/web"]);
+    expect(storage.getManagedRepository("acme/api")).toMatchObject({
+      installationId: 12,
+      mergeGateInstalled: true,
+      status: "active",
+    });
+    expect(storage.getManagedRepository("acme/web")).toMatchObject({
+      mergeGateInstalled: false,
+      status: "pending",
+    });
+  });
+
+  it("reserves usage atomically across a month and releases expired reservations", async () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+    const request = (jobId: string, expiresAt: string): UsageReservationRequest => ({
+      jobId,
+      month: "2026-09",
+      candidate: {
+        id: "codex-frontier",
+        provider: "codex",
+        model: "codex-model",
+        tier: "frontier",
+        enabled: true,
+        inputMicrosPerMillionTokens: 1_000_000,
+        outputMicrosPerMillionTokens: 2_000_000,
+      },
+      attempt: 1,
+      estimatedUsage: { inputTokens: 4_000, outputTokens: 6_000 },
+      estimatedCostMicros: 16_000,
+      limits: {
+        perJobTokens: 20_000,
+        perJobCostMicros: 1_000_000,
+        monthlyTokens: 15_000,
+        monthlyCostMicros: 10_000_000,
+      },
+      expiresAt,
+    });
+
+    const first = await storage.reserveUsage(request("one", "2099-09-04T12:01:00.000Z"), new Date("2026-09-04T12:00:00.000Z"));
+    const denied = await storage.reserveUsage(request("two", "2099-09-04T12:01:00.000Z"), new Date("2026-09-04T12:00:00.000Z"));
+    const expiredReplacement = await storage.reserveUsage(request("two", "2100-09-04T12:02:00.000Z"), new Date("2100-09-04T12:00:00.000Z"));
+
+    expect(first.ok).toBe(true);
+    expect(denied).toEqual({ ok: false, reason: "monthly_tokens" });
+    expect(expiredReplacement.ok).toBe(true);
   });
 });

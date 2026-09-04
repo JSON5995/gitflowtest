@@ -151,18 +151,15 @@ const hostedVariables = (
     GITHUB_APP_ID: env.GITHUB_APP_ID!,
     GITHUB_APP_PRIVATE_KEY_BASE64: env.GITHUB_APP_PRIVATE_KEY_BASE64!,
     GITHUB_WEBHOOK_SECRET: env.GITHUB_WEBHOOK_SECRET!,
-    OPENAI_API_KEY: env.OPENAI_API_KEY!,
-    FLOW_BUILDER: config.flow.builder,
-    FLOW_REVIEWER: config.flow.reviewer,
-    FLOW_CODEOWNERS: config.flow.codeowners.join(","),
     FLOW_MAX_FIX_ROUNDS: String(config.flow.maxFixRounds),
     FLOW_ADMIN_USERNAME: config.admin.username,
     FLOW_ADMIN_PASSWORD: config.admin.password,
+    FLOW_CREDENTIAL_KEY: env.FLOW_CREDENTIAL_KEY!,
     RAILWAY_RUN_UID: "0",
     RAILWAY_DEPLOYMENT_DRAINING_SECONDS: "30",
     RAILWAY_HEALTHCHECK_TIMEOUT_SEC: "300",
   };
-  for (const name of ["ANTHROPIC_API_KEY", "CURSOR_API_KEY", "FLOW_AGENT"] as const) {
+  for (const name of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CURSOR_API_KEY", "FLOW_AGENT"] as const) {
     const value = env[name]?.trim();
     if (value) values[name] = value;
   }

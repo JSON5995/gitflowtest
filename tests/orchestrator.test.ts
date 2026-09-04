@@ -96,9 +96,61 @@ describe("orchestration transitions", () => {
 });
 
 describe("Telegram orchestration", () => {
+  it("refuses to connect Telegram until Admin has activated the repository gate", async () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+    storage.saveManagedRepository({
+      repository: "acme/store",
+      installationId: 99,
+      codeowners: ["@acme/platform"],
+      setupPullRequestUrl: "https://github.com/acme/store/pull/7",
+      mergeGateInstalled: false,
+      updatedAt: "2026-09-04T12:00:00.000Z",
+    });
+    let checkedAccess = false;
+
+    await processTelegramUpdate({
+      updateId: "pending-connect",
+      chatId: "-100",
+      topicId: null,
+      userId: "123",
+      messageId: 1,
+      action: { type: "connect", repository: "acme/store" },
+    }, {
+      storage,
+      adminIds: ["123"],
+      telegram: {
+        downloadFile: async () => ({ bytes: Buffer.alloc(0), mimeType: "application/octet-stream" }),
+        sendMessage: async () => undefined,
+        setWebhook: async () => undefined,
+      },
+      transcribe: async () => "",
+      analyzeVideo: async () => ({ transcript: "", images: [] }),
+      model: { createPlan: async () => { throw new Error("not used"); } },
+      github: {
+        hasRepositoryAccess: async () => { checkedAccess = true; return { installationId: 99 }; },
+        createPlannedIssue: async () => ({ parentNumber: 17, childNumbers: [] }),
+        postClarificationAnswer: async () => undefined,
+        setFlowState: async () => undefined,
+      },
+    });
+
+    expect(checkedAccess).toBe(false);
+    expect(storage.getChatBinding("-100", null)).toBeNull();
+    expect(storage.claimNotification(Date.now() + 1_000)?.text).toContain("not active in Flow Admin");
+  });
+
   it("binds, collects, plans, creates, and links one request", async () => {
     const storage = openStorage(":memory:");
     storages.push(storage);
+    storage.saveManagedRepository({
+      repository: "acme/store",
+      installationId: 99,
+      codeowners: ["@acme/platform"],
+      setupPullRequestUrl: "https://github.com/acme/store/pull/7",
+      mergeGateInstalled: true,
+      updatedAt: "2026-09-04T12:00:00.000Z",
+    });
     const created: Array<{ repository: string; plan: WorkPlan }> = [];
     const baseUpdate = {
       updateId: "1",
@@ -129,6 +181,8 @@ describe("Telegram orchestration", () => {
       }) },
       github: {
         hasRepositoryAccess: async () => ({ installationId: 99 }),
+        postClarificationAnswer: async () => undefined,
+        setFlowState: async () => undefined,
         createPlannedIssue: async (repository: string, plan: WorkPlan) => {
           created.push({ repository, plan });
           return { parentNumber: 17, childNumbers: [] };
@@ -197,6 +251,8 @@ describe("Telegram orchestration", () => {
       }) },
       github: {
         hasRepositoryAccess: async () => ({ installationId: 99 }),
+        postClarificationAnswer: async () => undefined,
+        setFlowState: async () => undefined,
         createPlannedIssue: async () => ({ parentNumber: 17, childNumbers: [] }),
       },
     });
@@ -250,6 +306,8 @@ describe("Telegram orchestration", () => {
       } },
       github: {
         hasRepositoryAccess: async () => ({ installationId: 99 }),
+        postClarificationAnswer: async () => undefined,
+        setFlowState: async () => undefined,
         createPlannedIssue: async () => {
           creates += 1;
           if (creates === 1) throw new Error("response lost after GitHub accepted it");
@@ -265,5 +323,70 @@ describe("Telegram orchestration", () => {
     expect(creates).toBe(2);
     expect(storage.getDraftBySubmission("retry-3")).toMatchObject({ id: draftId });
     expect(storage.claimJob(Date.now() + 1_000, 1_000)?.idempotencyKey).toBe("build:acme/store#17");
+  });
+
+  it("posts a Telegram answer to GitHub and resumes the blocked issue idempotently", async () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+    storage.bindChat("-100", "77", 99, "acme/store");
+    storage.linkWork({
+      repository: "acme/store",
+      issueNumber: 17,
+      chatId: "-100",
+      topicId: "77",
+      pullRequestNumber: null,
+      providerJobId: null,
+      fixRounds: 0,
+      state: "blocked",
+      headSha: null,
+      repairHeadSha: null,
+      passedChecks: [],
+      blockReason: "clarification",
+      clarificationId: "intake:answer-100",
+    });
+    const answers: string[] = [];
+    const states: string[] = [];
+    const dependencies = {
+      storage,
+      adminIds: ["123"],
+      telegram: {
+        downloadFile: async () => ({ bytes: Buffer.alloc(0), mimeType: "application/octet-stream" }),
+        sendMessage: async () => undefined,
+        setWebhook: async () => undefined,
+      },
+      transcribe: async () => "",
+      analyzeVideo: async () => ({ transcript: "", images: [] }),
+      model: { createPlan: async () => { throw new Error("not used"); } },
+      github: {
+        hasRepositoryAccess: async () => ({ installationId: 99 }),
+        createPlannedIssue: async () => ({ parentNumber: 17, childNumbers: [] }),
+        postClarificationAnswer: async (_repository: string, _issue: number, text: string) => { answers.push(text); },
+        setFlowState: async (_repository: string, _issue: number, state: string) => { states.push(state); },
+      },
+    };
+    const update = {
+      updateId: "answer-100",
+      chatId: "-100",
+      topicId: "77",
+      userId: "123",
+      messageId: 100,
+      action: { type: "answer" as const, issueNumber: 17, text: "Only owners should see it." },
+    };
+
+    await processTelegramUpdate(update, dependencies);
+    await processTelegramUpdate(update, dependencies);
+
+    expect(answers).toEqual(["Only owners should see it."]);
+    expect(states).toEqual(["ready"]);
+    expect(storage.getWorkByIssue("acme/store", 17)?.state).toBe("ready");
+    expect(storage.claimJob(Date.now() + 1_000, 1_000)).toMatchObject({
+      idempotencyKey: "clarification:acme/store#17:telegram:answer-100",
+      payload: expect.objectContaining({
+        repository: "acme/store",
+        issueNumber: 17,
+        clarificationContext: expect.stringContaining("Only owners should see it."),
+      }),
+    });
+    expect(storage.claimJob(Date.now() + 1_000, 1_000)).toBeNull();
   });
 });

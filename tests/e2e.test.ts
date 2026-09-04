@@ -20,6 +20,14 @@ describe("end-to-end delivery", () => {
     const headSha = "a".repeat(40);
     const storage = openStorage(":memory:");
     storages.push(storage);
+    storage.saveManagedRepository({
+      repository: "acme/store",
+      installationId: 99,
+      codeowners: ["@acme/platform"],
+      setupPullRequestUrl: "https://github.com/acme/store/pull/7",
+      mergeGateInstalled: true,
+      updatedAt: "2026-09-04T12:00:00.000Z",
+    });
     const notifications: string[] = [];
     const builds: number[] = [];
     const qualityRuns: number[] = [];
@@ -35,12 +43,17 @@ describe("end-to-end delivery", () => {
       createPlannedIssue: async () => ({ parentNumber: 17, childNumbers: [] }),
       setFlowState: async () => undefined,
       dispatchBuild: async (_repository, issue) => { builds.push(issue); },
-      dispatchQuality: async (_repository, pullRequest) => { qualityRuns.push(pullRequest); },
+      dispatchCi: async (_repository, pullRequest) => { qualityRuns.push(pullRequest); },
+      dispatchAgentQuality: async () => undefined,
       verifyTrustedWorkflow: async () => true,
+      verifyClarificationPublisher: async () => true,
       publishCheck: async (_repository, check) => { checks.push(check); },
       openPullRequest: async () => 22,
       markPullRequestReady: async () => undefined,
       closeIssue: async () => undefined,
+      canAnswerClarification: async () => false,
+      getFlowState: async () => "ready",
+      postClarificationAnswer: async () => undefined,
     };
     const worker = {
       storage,
@@ -48,6 +61,29 @@ describe("end-to-end delivery", () => {
       botLogin: "flow-ai[bot]",
       builder: "codex" as const,
       maxFixRounds: 2,
+      routing: {
+        reserveRoute: async (task: import("../src/provider-router.js").RoutingTask, preferIndependentFrom?: import("../src/domain.js").Provider) => {
+          const provider = preferIndependentFrom === "codex" ? "claude" as const : "codex" as const;
+          const routeId = `${task.role}-route`;
+          return {
+            status: "ready" as const,
+            action: "dispatch" as const,
+            delayMs: 0,
+            route: {
+              routeId,
+              provider,
+              model: `${provider}-test-model`,
+              candidateId: `${provider}-test`,
+              attempt: 1,
+              reservationId: `${routeId}-reservation`,
+              task,
+            },
+          };
+        },
+        completeRoute: async () => undefined,
+        failRoute: async () => ({ status: "blocked" as const, reason: "configuration" as const, message: "needs attention" }),
+        cancelBeforeStart: async () => undefined,
+      },
       onError: (error: Error) => { throw error; },
       processTelegram: async (input: unknown) => processTelegramUpdate(input as ParsedTelegramUpdate, {
         storage,
@@ -115,7 +151,9 @@ describe("end-to-end delivery", () => {
         payload: raw,
       });
       expect(response.statusCode).toBe(200);
-      await processNextJob(worker, Date.now() + 1_000);
+      while (await processNextJob(worker, Date.now() + 1_000)) {
+        // Drain any durable workflow dispatch created by the webhook.
+      }
     };
 
     await sendGitHub("pr-1", "pull_request", {

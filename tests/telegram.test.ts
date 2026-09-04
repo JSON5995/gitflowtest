@@ -88,6 +88,12 @@ describe("Telegram update parsing", () => {
     expect(parseTelegramUpdate(update)?.action).toEqual({ type: "new" });
     update.message.text = "/ship";
     expect(parseTelegramUpdate(update)?.action).toEqual({ type: "submit" });
+    update.message.text = "/answer 17 Only workspace owners should see it";
+    expect(parseTelegramUpdate(update)?.action).toEqual({
+      type: "answer",
+      issueNumber: 17,
+      text: "Only workspace owners should see it",
+    });
   });
 });
 
@@ -137,6 +143,27 @@ describe("Telegram webhook", () => {
     expect(job?.idempotencyKey).toBe("telegram:1001");
     storage.completeJob(job!.id);
     expect(storage.claimJob(Date.now() + 1000, 1000)).toBeNull();
+  });
+
+  it("redacts feedback and clarification secrets before writing the durable job", async () => {
+    const storage = openStorage(":memory:");
+    storages.push(storage);
+    const server = Fastify();
+    servers.push(server);
+    registerTelegramRoutes(server, { storage, webhookSecret: "right", allowedUserIds: ["123"] });
+    const payload = fixture("telegram-text.json") as { message: { text: string } };
+    payload.message.text = "/answer 17 sk-ant-api03_abcdefghijklmnopqrstuv";
+
+    await server.inject({
+      method: "POST",
+      url: "/webhooks/telegram",
+      headers: { "x-telegram-bot-api-secret-token": "right" },
+      payload,
+    });
+
+    const serialized = JSON.stringify(storage.claimJob(Date.now() + 1_000)?.payload);
+    expect(serialized).not.toContain("abcdefghijklmnopqrstuv");
+    expect(serialized).toContain("REDACTED");
   });
 
   it("does not queue updates from users outside the allowlist", async () => {

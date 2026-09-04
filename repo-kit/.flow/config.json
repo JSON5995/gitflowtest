@@ -16,6 +16,7 @@
   "protectedPaths": [
     ".github/workflows/",
     ".github/CODEOWNERS",
+    ".cursor/rules/flow.mdc",
     "migrations/",
     ".flow/",
     "AGENTS.md",
@@ -23,6 +24,7 @@
     "scripts/run-contract.mjs",
     "scripts/check-review.mjs",
     "scripts/parse-cursor-result.mjs",
+    "scripts/clarification.mjs",
     "scripts/run-real-qa.mjs"
   ]
 }

@@ -1,7 +1,19 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import type { FeedbackItem, FlowState, WorkPlan } from "./domain.js";
+import type { FeedbackItem, FlowState, Provider, WorkPlan } from "./domain.js";
+import { randomUUID } from "node:crypto";
+import type {
+  BudgetDenialReason,
+  ModelCandidate,
+  ProviderFailureCategory,
+  RouterEvent,
+  RouterPolicy,
+  RoutingTask,
+  TokenUsage,
+  UsageReservationRequest,
+  UsageSettlement,
+} from "./provider-router.js";
 
 export type Job = {
   id: number;
@@ -9,6 +21,14 @@ export type Job = {
   idempotencyKey: string;
   payload: unknown;
   attempts: number;
+  reclaimed: boolean;
+};
+
+export type JobInput = {
+  kind: string;
+  idempotencyKey: string;
+  payload: unknown;
+  availableAt?: number;
 };
 
 export type Notification = {
@@ -38,6 +58,8 @@ export type Draft = {
 
 export type SubmissionPlan = { repository: string; plan: WorkPlan };
 
+export type WorkBlockReason = "clarification" | "route" | "quality";
+
 export type WorkRecord = {
   repository: string;
   issueNumber: number;
@@ -50,6 +72,8 @@ export type WorkRecord = {
   headSha: string | null;
   repairHeadSha: string | null;
   passedChecks: string[];
+  blockReason?: WorkBlockReason | null;
+  clarificationId?: string | null;
 };
 
 export type AdminWorkItem = {
@@ -81,6 +105,85 @@ export type AdminSummary = {
   awaitingApproval: AdminApprovalItem[];
 };
 
+export type ProviderCredentialRecord = {
+  sealed: string;
+  verifiedAt: string;
+  updatedAt: string;
+};
+
+export type DiscoveredModelRole = "build" | "review" | "qa";
+
+export type ProviderModelOption = {
+  id: string;
+  name: string;
+  roles: DiscoveredModelRole[];
+};
+
+export type ProviderModelCatalog = {
+  provider: Provider;
+  supportsDiscovery: boolean;
+  models: ProviderModelOption[];
+  refreshedAt: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
+};
+
+export type RoutingSettings = {
+  candidates: ModelCandidate[];
+  policy: RouterPolicy;
+};
+
+export type ManagedRepository = {
+  repository: string;
+  installationId: number;
+  codeowners: string[];
+  setupPullRequestUrl: string | null;
+  mergeGateInstalled: boolean;
+  status: "pending" | "active";
+  updatedAt: string;
+};
+
+export type ManagedRepositoryInput = Omit<ManagedRepository, "status">;
+
+export type UsageReservation = {
+  id: string;
+  jobId: string;
+  candidate: ModelCandidate;
+  attempt: number;
+  estimatedUsage: TokenUsage;
+  estimatedCostMicros: number;
+  status: "reserved" | "settled" | "released";
+};
+
+export type StoredRoutingAttempt = {
+  routeId: string;
+  task: RoutingTask;
+  candidate: ModelCandidate;
+  attempt: number;
+  reservationId: string;
+  status: "reserved" | "complete" | "failed";
+  failureCategory: ProviderFailureCategory | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RoutingAttemptFinalization = {
+  routeId: string;
+  status: "complete" | "failed";
+  failureCategory: ProviderFailureCategory | null;
+  settlement: UsageSettlement | null;
+  event: RouterEvent;
+};
+
+export type RoutingSummary = {
+  month: string;
+  reservedTokens: number;
+  settledTokens: number;
+  reservedCostMicros: number;
+  settledCostMicros: number;
+  recentEvents: RouterEvent[];
+};
+
 type FailureOptions = {
   maxAttempts: number;
   jitterMs?: number;
@@ -99,6 +202,7 @@ export type Storage = {
     now?: number,
   ): boolean;
   enqueueJob(kind: string, idempotencyKey: string, payload: unknown, now?: number): boolean;
+  saveWorkAndEnqueueJobs(work: WorkRecord, jobs: JobInput[], now?: number): void;
   claimJob(now?: number, leaseMs?: number): Job | null;
   completeJob(id: number): void;
   failJob(id: number, error: string, now: number, options: FailureOptions): void;
@@ -137,7 +241,38 @@ export type Storage = {
   saveWork(work: WorkRecord, now?: number): void;
   getWorkByIssue(repository: string, issueNumber: number): WorkRecord | null;
   getWorkByPullRequest(repository: string, pullRequestNumber: number): WorkRecord | null;
+  resumeBlockedWork(
+    repository: string,
+    issueNumber: number,
+    reason: WorkBlockReason,
+    jobKind: string,
+    idempotencyKey: string,
+    payload: unknown,
+    now?: number,
+  ): boolean;
   getAdminSummary(now?: number): AdminSummary;
+  setProviderCredential(provider: Provider, credential: ProviderCredentialRecord): void;
+  getProviderCredential(provider: Provider): ProviderCredentialRecord | null;
+  setProviderModelCatalog(catalog: ProviderModelCatalog, now?: number): void;
+  getProviderModelCatalog(provider: Provider): ProviderModelCatalog | null;
+  setRoutingSettings(settings: RoutingSettings, now?: number): void;
+  getRoutingSettings(): RoutingSettings | null;
+  saveManagedRepository(repository: ManagedRepositoryInput): void;
+  getManagedRepository(repository: string): ManagedRepository | null;
+  listManagedRepositories(): ManagedRepository[];
+  reserveUsage(
+    request: UsageReservationRequest,
+    now?: Date,
+  ): Promise<{ ok: true; reservationId: string } | { ok: false; reason: BudgetDenialReason }>;
+  settleUsage(settlement: UsageSettlement, now?: Date): Promise<boolean>;
+  releaseUsage(reservationId: string, now?: Date): Promise<void>;
+  getUsageReservation(reservationId: string): UsageReservation | null;
+  saveRoutingAttempt(attempt: StoredRoutingAttempt): void;
+  getRoutingAttempt(routeId: string): StoredRoutingAttempt | null;
+  listRoutingAttempts(jobId: string): StoredRoutingAttempt[];
+  finalizeRoutingAttempt(finalization: RoutingAttemptFinalization, now?: Date): Promise<boolean>;
+  appendRoutingEvent(event: RouterEvent): void;
+  getRoutingSummary(now?: Date): RoutingSummary;
   isReady(): boolean;
   close(): void;
 };
@@ -148,6 +283,7 @@ type JobRow = {
   idempotency_key: string;
   payload: string;
   attempts: number;
+  status: "pending" | "running";
 };
 
 type NotificationRow = {
@@ -190,6 +326,8 @@ type WorkRow = {
   head_sha: string | null;
   repair_head_sha: string | null;
   passed_checks: string;
+  block_reason: WorkBlockReason | null;
+  clarification_id: string | null;
 };
 
 type AdminWorkRow = {
@@ -291,6 +429,8 @@ CREATE TABLE IF NOT EXISTS work_links (
   head_sha TEXT,
   repair_head_sha TEXT,
   passed_checks TEXT NOT NULL DEFAULT '[]',
+  block_reason TEXT,
+  clarification_id TEXT,
   updated_at INTEGER NOT NULL,
   PRIMARY KEY(repository, issue_number)
 );
@@ -310,6 +450,75 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 
 CREATE INDEX IF NOT EXISTS outbox_due ON outbox(status, available_at, lease_until);
+
+CREATE TABLE IF NOT EXISTS provider_credentials (
+  provider TEXT PRIMARY KEY,
+  sealed_credential TEXT NOT NULL,
+  verified_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS control_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS managed_repositories (
+  repository TEXT PRIMARY KEY,
+  installation_id INTEGER NOT NULL,
+  codeowners TEXT NOT NULL,
+  setup_pull_request_url TEXT,
+  merge_gate_installed INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS usage_reservations (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  month TEXT NOT NULL,
+  candidate_json TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  estimated_input_tokens INTEGER NOT NULL,
+  estimated_output_tokens INTEGER NOT NULL,
+  estimated_cost_micros INTEGER NOT NULL,
+  actual_input_tokens INTEGER,
+  actual_output_tokens INTEGER,
+  actual_cost_micros INTEGER,
+  status TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS usage_reservations_month ON usage_reservations(month, status, expires_at);
+CREATE INDEX IF NOT EXISTS usage_reservations_job ON usage_reservations(job_id, status);
+
+CREATE TABLE IF NOT EXISTS routing_attempts (
+  route_id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  task_json TEXT NOT NULL,
+  candidate_json TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  reservation_id TEXT NOT NULL REFERENCES usage_reservations(id),
+  status TEXT NOT NULL,
+  failure_category TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS routing_attempts_job ON routing_attempts(job_id, created_at);
+
+CREATE TABLE IF NOT EXISTS routing_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  event_json TEXT NOT NULL,
+  occurred_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS routing_events_recent ON routing_events(occurred_at DESC, id DESC);
 `;
 
 export const openStorage = (path: string): Storage => {
@@ -327,6 +536,8 @@ export const openStorage = (path: string): Storage => {
   if (!workColumns.has("passed_checks")) {
     database.exec("ALTER TABLE work_links ADD COLUMN passed_checks TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!workColumns.has("block_reason")) database.exec("ALTER TABLE work_links ADD COLUMN block_reason TEXT");
+  if (!workColumns.has("clarification_id")) database.exec("ALTER TABLE work_links ADD COLUMN clarification_id TEXT");
   const draftColumns = new Set(
     (database.pragma("table_info(drafts)") as Array<{ name: string }>).map((column) => column.name),
   );
@@ -339,7 +550,7 @@ export const openStorage = (path: string): Storage => {
   const claimJobTransaction = database.transaction((now: number, leaseMs: number) => {
     const row = database
       .prepare(
-        `SELECT id, kind, idempotency_key, payload, attempts
+        `SELECT id, kind, idempotency_key, payload, attempts, status
          FROM jobs
          WHERE (status = 'pending' AND available_at <= ?)
             OR (status = 'running' AND lease_until < ?)
@@ -386,6 +597,8 @@ export const openStorage = (path: string): Storage => {
           headSha: row.head_sha,
           repairHeadSha: row.repair_head_sha,
           passedChecks: JSON.parse(row.passed_checks) as string[],
+          blockReason: row.block_reason,
+          clarificationId: row.clarification_id,
         }
       : null;
 
@@ -394,8 +607,9 @@ export const openStorage = (path: string): Storage => {
       .prepare(
         `INSERT INTO work_links(
            repository, issue_number, chat_id, topic_id, pull_request_number,
-           provider_job_id, fix_rounds, state, head_sha, repair_head_sha, passed_checks, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           provider_job_id, fix_rounds, state, head_sha, repair_head_sha, passed_checks,
+           block_reason, clarification_id, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(repository, issue_number) DO UPDATE SET
            chat_id = excluded.chat_id,
            topic_id = excluded.topic_id,
@@ -406,6 +620,8 @@ export const openStorage = (path: string): Storage => {
            head_sha = excluded.head_sha,
            repair_head_sha = excluded.repair_head_sha,
            passed_checks = excluded.passed_checks,
+           block_reason = excluded.block_reason,
+           clarification_id = excluded.clarification_id,
            updated_at = excluded.updated_at`,
       )
       .run(
@@ -420,9 +636,215 @@ export const openStorage = (path: string): Storage => {
         work.headSha,
         work.repairHeadSha,
         JSON.stringify(work.passedChecks),
+        work.blockReason ?? null,
+        work.clarificationId ?? null,
         now,
       );
   };
+
+  const resumeBlockedWorkTransaction = database.transaction((
+    repository: string,
+    issueNumber: number,
+    reason: WorkBlockReason,
+    jobKind: string,
+    idempotencyKey: string,
+    payload: unknown,
+    now: number,
+  ) => {
+    const resumed = database.prepare(
+      `UPDATE work_links
+       SET state = 'ready', block_reason = NULL, clarification_id = NULL, updated_at = ?
+       WHERE repository = ? AND issue_number = ? AND state = 'blocked' AND block_reason = ?`,
+    ).run(now, repository, issueNumber, reason);
+    if (resumed.changes !== 1) return false;
+    database.prepare(
+      `INSERT OR IGNORE INTO jobs(kind, idempotency_key, payload, available_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(jobKind, idempotencyKey, JSON.stringify(payload), now, now, now);
+    return true;
+  });
+
+  const saveWorkAndEnqueueJobsTransaction = database.transaction((
+    work: WorkRecord,
+    jobs: JobInput[],
+    now: number,
+  ) => {
+    saveWork(work, now);
+    const statement = database.prepare(
+      `INSERT OR IGNORE INTO jobs(kind, idempotency_key, payload, available_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    for (const job of jobs) {
+      statement.run(
+        job.kind,
+        job.idempotencyKey,
+        JSON.stringify(job.payload),
+        job.availableAt ?? now,
+        now,
+        now,
+      );
+    }
+  });
+
+  const expireReservations = (now: number): void => {
+    database.prepare(
+      `UPDATE usage_reservations
+       SET status = 'released', updated_at = ?
+       WHERE status = 'reserved' AND expires_at <= ?
+         AND NOT EXISTS (
+           SELECT 1 FROM routing_attempts
+           WHERE routing_attempts.reservation_id = usage_reservations.id
+             AND routing_attempts.status = 'reserved'
+         )`,
+    ).run(now, now);
+  };
+
+  const usageTotals = (
+    where: "job_id" | "month",
+    value: string,
+  ): { tokens: number; cost: number } => {
+    const row = database.prepare(
+      `SELECT
+         COALESCE(SUM(CASE
+           WHEN status = 'reserved' THEN estimated_input_tokens + estimated_output_tokens
+           WHEN status = 'settled' THEN actual_input_tokens + actual_output_tokens
+           ELSE 0 END), 0) AS tokens,
+         COALESCE(SUM(CASE
+           WHEN status = 'reserved' THEN estimated_cost_micros
+           WHEN status = 'settled' THEN actual_cost_micros
+           ELSE 0 END), 0) AS cost
+       FROM usage_reservations
+       WHERE ${where} = ? AND status IN ('reserved', 'settled')`,
+    ).get(value) as { tokens: number; cost: number };
+    return row;
+  };
+
+  const reserveUsageTransaction = database.transaction((request: UsageReservationRequest, now: Date) => {
+    const nowMs = now.getTime();
+    const expiresAt = new Date(request.expiresAt).getTime();
+    if (!Number.isFinite(expiresAt) || expiresAt <= nowMs) throw new Error("Usage reservation expiry must be in the future");
+    expireReservations(nowMs);
+    const requestedTokens = request.estimatedUsage.inputTokens + request.estimatedUsage.outputTokens;
+    if (requestedTokens > request.limits.perJobTokens) return { ok: false as const, reason: "job_tokens" as const };
+    if (request.estimatedCostMicros > request.limits.perJobCostMicros) {
+      return { ok: false as const, reason: "job_cost" as const };
+    }
+    const job = usageTotals("job_id", request.jobId);
+    if (job.tokens + requestedTokens > request.limits.perJobTokens) {
+      return { ok: false as const, reason: "job_tokens" as const };
+    }
+    if (job.cost + request.estimatedCostMicros > request.limits.perJobCostMicros) {
+      return { ok: false as const, reason: "job_cost" as const };
+    }
+    const month = usageTotals("month", request.month);
+    if (month.tokens + requestedTokens > request.limits.monthlyTokens) {
+      return { ok: false as const, reason: "monthly_tokens" as const };
+    }
+    if (month.cost + request.estimatedCostMicros > request.limits.monthlyCostMicros) {
+      return { ok: false as const, reason: "monthly_cost" as const };
+    }
+    const reservationId = randomUUID();
+    database.prepare(
+      `INSERT INTO usage_reservations(
+         id, job_id, month, candidate_json, attempt,
+         estimated_input_tokens, estimated_output_tokens, estimated_cost_micros,
+         status, expires_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?)`,
+    ).run(
+      reservationId,
+      request.jobId,
+      request.month,
+      JSON.stringify(request.candidate),
+      request.attempt,
+      request.estimatedUsage.inputTokens,
+      request.estimatedUsage.outputTokens,
+      request.estimatedCostMicros,
+      expiresAt,
+      nowMs,
+      nowMs,
+    );
+    return { ok: true as const, reservationId };
+  });
+
+  const finalizeRoutingAttemptTransaction = database.transaction((
+    finalization: RoutingAttemptFinalization,
+    now: Date,
+  ) => {
+    const attempt = database.prepare(
+      "SELECT reservation_id, status FROM routing_attempts WHERE route_id = ?",
+    ).get(finalization.routeId) as { reservation_id: string; status: StoredRoutingAttempt["status"] } | undefined;
+    if (!attempt || attempt.status !== "reserved") return false;
+
+    let usageChanges: number;
+    if (finalization.settlement) {
+      if (finalization.settlement.reservationId !== attempt.reservation_id) {
+        throw new Error("Usage reservation does not belong to the provider route");
+      }
+      usageChanges = database.prepare(
+        `UPDATE usage_reservations
+         SET status = 'settled', actual_input_tokens = ?, actual_output_tokens = ?,
+             actual_cost_micros = ?, updated_at = ?
+         WHERE id = ? AND status = 'reserved'`,
+      ).run(
+        finalization.settlement.actualUsage.inputTokens,
+        finalization.settlement.actualUsage.outputTokens,
+        finalization.settlement.actualCostMicros,
+        now.getTime(),
+        finalization.settlement.reservationId,
+      ).changes;
+    } else {
+      usageChanges = database.prepare(
+        "UPDATE usage_reservations SET status = 'released', updated_at = ? WHERE id = ? AND status = 'reserved'",
+      ).run(now.getTime(), attempt.reservation_id).changes;
+    }
+    if (usageChanges !== 1) return false;
+
+    const attemptChanges = database.prepare(
+      `UPDATE routing_attempts
+       SET status = ?, failure_category = ?, updated_at = ?
+       WHERE route_id = ? AND status = 'reserved'`,
+    ).run(
+      finalization.status,
+      finalization.failureCategory,
+      finalization.event.occurredAt,
+      finalization.routeId,
+    ).changes;
+    if (attemptChanges !== 1) throw new Error("Provider route is no longer active");
+
+    database.prepare(
+      "INSERT INTO routing_events(job_id, state, event_json, occurred_at) VALUES (?, ?, ?, ?)",
+    ).run(
+      finalization.event.jobId,
+      finalization.event.state,
+      JSON.stringify(finalization.event),
+      finalization.event.occurredAt,
+    );
+    return true;
+  });
+
+  const mapRoutingAttempt = (row: {
+    route_id: string;
+    task_json: string;
+    candidate_json: string;
+    attempt: number;
+    reservation_id: string;
+    status: "reserved" | "complete" | "failed";
+    failure_category: ProviderFailureCategory | null;
+    created_at: string;
+    updated_at: string;
+  } | undefined): StoredRoutingAttempt | null => row
+    ? {
+        routeId: row.route_id,
+        task: JSON.parse(row.task_json) as RoutingTask,
+        candidate: JSON.parse(row.candidate_json) as ModelCandidate,
+        attempt: row.attempt,
+        reservationId: row.reservation_id,
+        status: row.status,
+        failureCategory: row.failure_category,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }
+    : null;
 
   return {
     recordWebhook(source, deliveryId, payloadHash) {
@@ -463,6 +885,10 @@ export const openStorage = (path: string): Storage => {
       return result.changes === 1;
     },
 
+    saveWorkAndEnqueueJobs(work, jobs, now = Date.now()) {
+      saveWorkAndEnqueueJobsTransaction.immediate(work, jobs, now);
+    },
+
     claimJob(now = Date.now(), leaseMs = 30_000) {
       const row = claimJobTransaction.immediate(now, leaseMs) as JobRow | null;
       return row
@@ -472,6 +898,7 @@ export const openStorage = (path: string): Storage => {
             idempotencyKey: row.idempotency_key,
             payload: JSON.parse(row.payload) as unknown,
             attempts: row.attempts,
+            reclaimed: row.status === "running",
           }
         : null;
     },
@@ -691,6 +1118,18 @@ export const openStorage = (path: string): Storage => {
       return mapWork(row);
     },
 
+    resumeBlockedWork(repository, issueNumber, reason, jobKind, idempotencyKey, payload, now = Date.now()) {
+      return resumeBlockedWorkTransaction.immediate(
+        repository,
+        issueNumber,
+        reason,
+        jobKind,
+        idempotencyKey,
+        payload,
+        now,
+      );
+    },
+
     getAdminSummary(now = Date.now()) {
       const repositories = database
         .prepare(
@@ -807,6 +1246,232 @@ export const openStorage = (path: string): Storage => {
             updatedAt: work.updatedAt,
           };
         }),
+      };
+    },
+
+    setProviderCredential(provider, credential) {
+      database.prepare(
+        `INSERT INTO provider_credentials(provider, sealed_credential, verified_at, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(provider) DO UPDATE SET
+           sealed_credential = excluded.sealed_credential,
+           verified_at = excluded.verified_at,
+           updated_at = excluded.updated_at`,
+      ).run(provider, credential.sealed, credential.verifiedAt, credential.updatedAt);
+    },
+
+    getProviderCredential(provider) {
+      const row = database.prepare(
+        "SELECT sealed_credential, verified_at, updated_at FROM provider_credentials WHERE provider = ?",
+      ).get(provider) as { sealed_credential: string; verified_at: string; updated_at: string } | undefined;
+      return row
+        ? { sealed: row.sealed_credential, verifiedAt: row.verified_at, updatedAt: row.updated_at }
+        : null;
+    },
+
+    setProviderModelCatalog(catalog, now = Date.now()) {
+      database.prepare(
+        `INSERT INTO control_settings(key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      ).run(`models:${catalog.provider}`, JSON.stringify(catalog), now);
+    },
+
+    getProviderModelCatalog(provider) {
+      const row = database.prepare("SELECT value FROM control_settings WHERE key = ?")
+        .get(`models:${provider}`) as { value: string } | undefined;
+      return row ? JSON.parse(row.value) as ProviderModelCatalog : null;
+    },
+
+    setRoutingSettings(settings, now = Date.now()) {
+      database.prepare(
+        `INSERT INTO control_settings(key, value, updated_at) VALUES ('routing', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      ).run(JSON.stringify(settings), now);
+    },
+
+    getRoutingSettings() {
+      const row = database.prepare("SELECT value FROM control_settings WHERE key = 'routing'")
+        .get() as { value: string } | undefined;
+      return row ? JSON.parse(row.value) as RoutingSettings : null;
+    },
+
+    saveManagedRepository(repository) {
+      database.prepare(
+        `INSERT INTO managed_repositories(
+           repository, installation_id, codeowners, setup_pull_request_url, merge_gate_installed, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(repository) DO UPDATE SET
+           installation_id = excluded.installation_id,
+           codeowners = excluded.codeowners,
+           setup_pull_request_url = excluded.setup_pull_request_url,
+           merge_gate_installed = excluded.merge_gate_installed,
+           updated_at = excluded.updated_at`,
+      ).run(
+        repository.repository,
+        repository.installationId,
+        JSON.stringify(repository.codeowners),
+        repository.setupPullRequestUrl,
+        repository.mergeGateInstalled ? 1 : 0,
+        repository.updatedAt,
+      );
+    },
+
+    getManagedRepository(repository) {
+      const row = database.prepare("SELECT * FROM managed_repositories WHERE repository = ?")
+        .get(repository) as {
+          repository: string;
+          installation_id: number;
+          codeowners: string;
+          setup_pull_request_url: string | null;
+          merge_gate_installed: number;
+          updated_at: string;
+        } | undefined;
+      return row
+        ? {
+            repository: row.repository,
+            installationId: row.installation_id,
+            codeowners: JSON.parse(row.codeowners) as string[],
+            setupPullRequestUrl: row.setup_pull_request_url,
+            mergeGateInstalled: row.merge_gate_installed === 1,
+            status: row.merge_gate_installed === 1 ? "active" : "pending",
+            updatedAt: row.updated_at,
+          }
+        : null;
+    },
+
+    listManagedRepositories() {
+      const rows = database.prepare("SELECT repository FROM managed_repositories ORDER BY repository")
+        .all() as Array<{ repository: string }>;
+      return rows.flatMap((row) => {
+        const repository = this.getManagedRepository(row.repository);
+        return repository ? [repository] : [];
+      });
+    },
+
+    async reserveUsage(request, now = new Date()) {
+      return reserveUsageTransaction.immediate(request, now);
+    },
+
+    async settleUsage(settlement, now = new Date()) {
+      const result = database.prepare(
+        `UPDATE usage_reservations
+         SET status = 'settled', actual_input_tokens = ?, actual_output_tokens = ?,
+             actual_cost_micros = ?, updated_at = ?
+         WHERE id = ? AND status = 'reserved'`,
+      ).run(
+        settlement.actualUsage.inputTokens,
+        settlement.actualUsage.outputTokens,
+        settlement.actualCostMicros,
+        now.getTime(),
+        settlement.reservationId,
+      );
+      return result.changes === 1;
+    },
+
+    async releaseUsage(reservationId, now = new Date()) {
+      database.prepare(
+        "UPDATE usage_reservations SET status = 'released', updated_at = ? WHERE id = ? AND status = 'reserved'",
+      ).run(now.getTime(), reservationId);
+    },
+
+    getUsageReservation(reservationId) {
+      const row = database.prepare("SELECT * FROM usage_reservations WHERE id = ?").get(reservationId) as {
+        id: string;
+        job_id: string;
+        candidate_json: string;
+        attempt: number;
+        estimated_input_tokens: number;
+        estimated_output_tokens: number;
+        estimated_cost_micros: number;
+        status: "reserved" | "settled" | "released";
+      } | undefined;
+      return row
+        ? {
+            id: row.id,
+            jobId: row.job_id,
+            candidate: JSON.parse(row.candidate_json) as ModelCandidate,
+            attempt: row.attempt,
+            estimatedUsage: {
+              inputTokens: row.estimated_input_tokens,
+              outputTokens: row.estimated_output_tokens,
+            },
+            estimatedCostMicros: row.estimated_cost_micros,
+            status: row.status,
+          }
+        : null;
+    },
+
+    saveRoutingAttempt(attempt) {
+      database.prepare(
+        `INSERT INTO routing_attempts(
+           route_id, job_id, role, task_json, candidate_json, attempt,
+           reservation_id, status, failure_category, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        attempt.routeId,
+        attempt.task.jobId,
+        attempt.task.role,
+        JSON.stringify(attempt.task),
+        JSON.stringify(attempt.candidate),
+        attempt.attempt,
+        attempt.reservationId,
+        attempt.status,
+        attempt.failureCategory,
+        attempt.createdAt,
+        attempt.updatedAt,
+      );
+    },
+
+    getRoutingAttempt(routeId) {
+      const row = database.prepare("SELECT * FROM routing_attempts WHERE route_id = ?").get(routeId) as Parameters<typeof mapRoutingAttempt>[0];
+      return mapRoutingAttempt(row);
+    },
+
+    listRoutingAttempts(jobId) {
+      const rows = database.prepare("SELECT * FROM routing_attempts WHERE job_id = ? ORDER BY rowid")
+        .all(jobId) as Array<NonNullable<Parameters<typeof mapRoutingAttempt>[0]>>;
+      return rows.flatMap((row) => {
+        const attempt = mapRoutingAttempt(row);
+        return attempt ? [attempt] : [];
+      });
+    },
+
+    async finalizeRoutingAttempt(finalization, now = new Date()) {
+      return finalizeRoutingAttemptTransaction.immediate(finalization, now);
+    },
+
+    appendRoutingEvent(event) {
+      database.prepare(
+        "INSERT INTO routing_events(job_id, state, event_json, occurred_at) VALUES (?, ?, ?, ?)",
+      ).run(event.jobId, event.state, JSON.stringify(event), event.occurredAt);
+    },
+
+    getRoutingSummary(now = new Date()) {
+      expireReservations(now.getTime());
+      const month = now.toISOString().slice(0, 7);
+      const rows = database.prepare(
+        `SELECT status,
+                estimated_input_tokens + estimated_output_tokens AS estimated_tokens,
+                estimated_cost_micros,
+                COALESCE(actual_input_tokens, 0) + COALESCE(actual_output_tokens, 0) AS actual_tokens,
+                COALESCE(actual_cost_micros, 0) AS actual_cost_micros
+         FROM usage_reservations WHERE month = ? AND status IN ('reserved', 'settled')`,
+      ).all(month) as Array<{
+        status: "reserved" | "settled";
+        estimated_tokens: number;
+        estimated_cost_micros: number;
+        actual_tokens: number;
+        actual_cost_micros: number;
+      }>;
+      const events = database.prepare("SELECT event_json FROM routing_events ORDER BY occurred_at DESC, id DESC LIMIT 25")
+        .all() as Array<{ event_json: string }>;
+      return {
+        month,
+        reservedTokens: rows.filter((row) => row.status === "reserved").reduce((sum, row) => sum + row.estimated_tokens, 0),
+        settledTokens: rows.filter((row) => row.status === "settled").reduce((sum, row) => sum + row.actual_tokens, 0),
+        reservedCostMicros: rows.filter((row) => row.status === "reserved").reduce((sum, row) => sum + row.estimated_cost_micros, 0),
+        settledCostMicros: rows.filter((row) => row.status === "settled").reduce((sum, row) => sum + row.actual_cost_micros, 0),
+        recentEvents: events.map((row) => JSON.parse(row.event_json) as RouterEvent),
       };
     },
 

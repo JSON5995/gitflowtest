@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 describe("deployment package", () => {
   it("runs one non-root service with durable storage and health checks", () => {
     const dockerfile = readFileSync("Dockerfile", "utf8");
+    const entrypoint = readFileSync("docker-entrypoint.sh", "utf8");
     const compose = parse(readFileSync("compose.yml", "utf8")) as {
       services: Record<string, Record<string, unknown>>;
       volumes: Record<string, unknown>;
@@ -12,6 +13,9 @@ describe("deployment package", () => {
     const service = compose.services.flow!;
 
     expect(dockerfile).toContain("USER node");
+    expect(dockerfile).toContain("ENTRYPOINT [\"/usr/local/bin/docker-entrypoint.sh\"]");
+    expect(entrypoint).toContain("chown node:node /data");
+    expect(entrypoint).toContain("exec gosu node");
     expect(dockerfile).toContain("HEALTHCHECK");
     expect(service).toMatchObject({ restart: "unless-stopped", init: true });
     expect(service).toHaveProperty("healthcheck");

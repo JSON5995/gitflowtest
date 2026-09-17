@@ -11,6 +11,11 @@ const OptionalSecretSchema = z.preprocess(
   z.string().min(1).optional(),
 );
 
+const PreviewEnvironmentSchema = z.object({
+  FLOW_PREVIEW_MODE: z.literal("true"),
+  PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+});
+
 const EnvironmentSchema = z
   .object({
     NODE_ENV: z.enum(["development", "test", "production"]).default("production"),
@@ -92,6 +97,10 @@ export type AppConfig = {
   credentialKey: Buffer;
 };
 
+export type StartupConfig =
+  | { mode: "preview"; port: number }
+  | { mode: "production"; config: AppConfig };
+
 export const loadConfig = (env: Record<string, string | undefined>): AppConfig => {
   const value = EnvironmentSchema.parse(env);
   const builder = value.FLOW_AGENT ?? value.FLOW_BUILDER;
@@ -133,4 +142,12 @@ export const loadConfig = (env: Record<string, string | undefined>): AppConfig =
     },
     credentialKey: Buffer.from(value.FLOW_CREDENTIAL_KEY, "base64url"),
   };
+};
+
+export const loadStartupConfig = (env: Record<string, string | undefined>): StartupConfig => {
+  if (env.FLOW_PREVIEW_MODE === "true") {
+    const preview = PreviewEnvironmentSchema.parse(env);
+    return { mode: "preview", port: preview.PORT };
+  }
+  return { mode: "production", config: loadConfig(env) };
 };

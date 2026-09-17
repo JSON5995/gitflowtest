@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { loadConfig, type AppConfig } from "./config.js";
+import { loadStartupConfig, type AppConfig } from "./config.js";
 import {
   createControlPlane,
   createProviderModelDiscovery,
@@ -16,6 +16,7 @@ import { createRoutingService } from "./routing-service.js";
 import { createRoutedIntakeModel } from "./routed-intake.js";
 import { processTelegramUpdate } from "./orchestrator.js";
 import { loadRepositoryKit } from "./provision.js";
+import { buildPreviewServer } from "./preview.js";
 import { buildServer } from "./server.js";
 import { openStorage } from "./storage.js";
 import { createTelegramClient, registerTelegramRoutes, type ParsedTelegramUpdate } from "./telegram.js";
@@ -168,8 +169,26 @@ export const startApplication = async (config: AppConfig): Promise<RunningApplic
   }
 };
 
+export const startPreviewApplication = async (port: number): Promise<RunningApplication> => {
+  const server = buildPreviewServer();
+  try {
+    const address = await server.listen({ host: "0.0.0.0", port });
+    console.info("Flow preview mode active; storage, Admin, Telegram, GitHub, providers, credentials, workers, and webhooks are disabled.");
+    return {
+      address,
+      close: () => server.close(),
+    };
+  } catch (error) {
+    await server.close();
+    throw error;
+  }
+};
+
 export const main = async (): Promise<void> => {
-  const application = await startApplication(loadConfig(process.env));
+  const startup = loadStartupConfig(process.env);
+  const application = startup.mode === "preview"
+    ? await startPreviewApplication(startup.port)
+    : await startApplication(startup.config);
   console.info(`Flow listening at ${application.address}`);
   let closing = false;
   const close = async (): Promise<void> => {

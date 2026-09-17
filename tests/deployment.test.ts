@@ -13,6 +13,7 @@ describe("deployment package", () => {
     const service = compose.services.flow!;
 
     expect(dockerfile).toContain("USER node");
+    expect(dockerfile).toContain("python3 make g++");
     expect(dockerfile).toContain("ENTRYPOINT [\"/usr/local/bin/docker-entrypoint.sh\"]");
     expect(entrypoint).toContain("chown node:node /data");
     expect(entrypoint).toContain("exec gosu node");

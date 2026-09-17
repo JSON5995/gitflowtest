@@ -192,7 +192,7 @@ const assertJourney = async (assertion, journeyName) => {
 const browserEvidence = [];
 try {
   for (const viewport of config.viewports) {
-    await page.setViewportSize(viewport.width, viewport.height);
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
     for (const journey of config.journeys) {
       await page.goto(urlFor(journey.startPath), { waitUntil: "domcontentloaded" });
       for (const action of journey.actions) await runAction(action, journey.name);

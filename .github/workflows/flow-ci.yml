@@ -1,0 +1,57 @@
+name: Flow CI
+run-name: "Flow CI · PR #${{ inputs.pr_number }} · SHA ${{ inputs.head_sha }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to verify
+        required: true
+        type: string
+      head_sha:
+        description: Exact pull request head to verify
+        required: true
+        type: string
+
+concurrency:
+  group: flow-ci-${{ github.repository }}-pull_request-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      PR_NUMBER: ${{ inputs.pr_number }}
+      HEAD_SHA: ${{ inputs.head_sha }}
+    steps:
+      - name: Validate the exact pull request head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha)" = "$HEAD_SHA"
+          echo "BASE_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .base.sha)" >> "$GITHUB_ENV"
+
+      - name: Check out the exact pull request head without credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Materialize contract from the trusted base commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git show "${BASE_SHA}:.flow/config.json" > "$RUNNER_TEMP/base-flow-config.json"
+          git show "${BASE_SHA}:scripts/run-contract.mjs" > "$RUNNER_TEMP/run-contract.mjs"
+
+      - name: Install and run deterministic checks
+        run: |
+          node "$RUNNER_TEMP/run-contract.mjs" install --config "$RUNNER_TEMP/base-flow-config.json"
+          git show "${BASE_SHA}:.flow/config.json" > "$RUNNER_TEMP/base-flow-config.json"
+          git show "${BASE_SHA}:scripts/run-contract.mjs" > "$RUNNER_TEMP/run-contract.mjs"
+          node "$RUNNER_TEMP/run-contract.mjs" checks --config "$RUNNER_TEMP/base-flow-config.json"

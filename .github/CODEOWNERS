@@ -1,0 +1,6 @@
+# BEGIN Flow AI required human reviewers
+* @JSON5995
+.github/CODEOWNERS @JSON5995
+.github/workflows/ @JSON5995
+.flow/ @JSON5995
+# END Flow AI required human reviewers

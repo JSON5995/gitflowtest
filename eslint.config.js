@@ -22,4 +22,20 @@ export default tseslint.config(
       },
     },
   },
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        AbortSignal: "readonly",
+        Buffer: "readonly",
+        console: "readonly",
+        document: "readonly",
+        fetch: "readonly",
+        getComputedStyle: "readonly",
+        process: "readonly",
+        URL: "readonly",
+        window: "readonly",
+      },
+    },
+  },
 );

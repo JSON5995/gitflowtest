@@ -105,6 +105,7 @@ jobs:
           name: flow-review-input-${{ github.run_id }}
           path: .flow-review-input/
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 1
 
   review:

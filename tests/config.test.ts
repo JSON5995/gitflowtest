@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, loadStartupConfig } from "../src/config.js";
 import { validEnv } from "./helpers.js";
 
 describe("loadConfig", () => {
+  it("loads preview mode with only the flag and port", () => {
+    expect(loadStartupConfig({ FLOW_PREVIEW_MODE: "true", PORT: "4321" })).toEqual({
+      mode: "preview",
+      port: 4321,
+    });
+  });
+
+  it("keeps strict production validation when preview mode is absent or false", () => {
+    expect(() => loadStartupConfig({ FLOW_PREVIEW_MODE: "false", PORT: "3000" }))
+      .toThrow(/PUBLIC_URL/);
+    expect(() => loadStartupConfig({ PORT: "3000" })).toThrow(/PUBLIC_URL/);
+  });
+
   it("allows Admin to configure one provider for every role after startup", () => {
     expect(() => loadConfig(validEnv({
       FLOW_BUILDER: "codex",

@@ -5,6 +5,7 @@ import type { ControlPlane, ControlPlaneSnapshot } from "./control-plane.js";
 import type { Provider } from "./domain.js";
 import type { GitHubAppAccess, GitHubInstallation, GitHubInstallationRepository } from "./github-app.js";
 import type { AdminSummary, AdminWorkItem } from "./storage.js";
+import { DESIGN_TOKENS } from "./design.js";
 
 export type AdminRouteOptions = {
   username: string;
@@ -421,28 +422,7 @@ const renderSetup = (
 </html>`;
 };
 
-const ADMIN_STYLES = `
-:root {
-  color-scheme: light;
-  --ink: #101820;
-  --muted: #5a6872;
-  --fog: #f1f5f7;
-  --paper: #fbfcfc;
-  --line: #d6dfe3;
-  --blue: #165dcc;
-  --blue-soft: #e8f0fd;
-  --green: #11705b;
-  --green-soft: #e4f4ee;
-  --amber: #9a5d08;
-  --amber-soft: #fff1d6;
-  --red: #b2382b;
-  --red-soft: #fbe9e6;
-  --radius: 14px;
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
-  background: var(--fog);
-  color: var(--ink);
-}
-* { box-sizing: border-box; }
+const ADMIN_STYLES = `${DESIGN_TOKENS}
 body { margin: 0; min-width: 320px; background: var(--fog); }
 a { color: var(--blue); font-weight: 650; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 a:hover { text-decoration-thickness: 2px; }

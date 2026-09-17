@@ -218,6 +218,19 @@ Enable scheduled backups for the attached Railway volume and periodically restor
 
 Many repositories do not require PostgreSQL. Move to PostgreSQL only when you need multiple Flow replicas or shared multi-customer tenancy.
 
+### Safe public preview deployments
+
+Use preview mode for a public demo or a Railway pull-request environment. It needs only these variables:
+
+```text
+FLOW_PREVIEW_MODE=true
+PORT=3000
+```
+
+The root URL serves a polished, read-only explanation of the Flow lifecycle and `/health/ready` reports readiness. Preview mode deliberately does not initialize the database, Admin, Telegram, GitHub, AI providers, the credential vault, workers, or webhook routes. Existing production startup remains strict whenever `FLOW_PREVIEW_MODE` is not exactly `true`.
+
+Create a separate Railway service or pull-request environment for previews. **Never copy production credentials into it.** The preview neither needs nor reads them, and keeping its environment isolated prevents accidental secret exposure. The Docker build stage includes the compiler toolchain required to install native Node dependencies; the final runtime image remains compiler-free.
+
 ## 6. Finish setup in Admin
 
 Open `/admin`. Your browser requests HTTP Basic credentials:

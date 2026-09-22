@@ -13,3 +13,11 @@
 11. For changed UI or API behavior, tests must exercise the running application and real configured endpoint. Do not intercept the acceptance path, replace it with a mock response, or claim screenshots as functional proof.
 12. UI evidence must cover the configured mobile and desktop viewports and preserve the project's design tokens, fonts, interaction sizes, and overflow rules.
 13. If one missing fact makes a correct implementation impossible, do not guess. Create only `.flow-clarification.json` with `{ "version": 1, "question": "one concrete question", "context": "optional short context" }`. Do not include code changes with a clarification request.
+14. For changed API or UI behavior, add or update the root `flow.qa.json` deterministic feature QA overlay. It must use `{ "version": 1, "apiProbes": [...], "journeys": [...] }`; use same-origin paths beginning with `/`, selector actions (`goto`, `click`, `fill`, `wait`), and assertions (`visible`, `text`, `urlContains`). Never put credentials or literal secret values in it; `fill.valueFromEnv` and `headersFromEnv` may reference only `FLOW_QA_EMAIL`, `FLOW_QA_PASSWORD`, or `FLOW_QA_TOKEN`.
+15. Before planning, read `.flow/install-manifest.json`, every referenced `.flow/skills/*.md` file, the repository's own contributor documentation, dependency manifests, framework configuration, and nearby production code and tests. Use the exact versions and conventions found in the repository; a generic framework pattern never overrides local evidence.
+16. If Flow did not recognize the stack, first derive its architecture and install/check/start commands from committed files. If a required command or convention cannot be proven from the repository, request one concrete clarification instead of guessing.
+
+## Detected specialist skills
+
+- Read and follow `.flow/skills/node.md` for Node.js work.
+- Read and follow `.flow/skills/docker.md` for Docker work.

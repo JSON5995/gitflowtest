@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global AbortSignal, Buffer, URL, document, fetch, getComputedStyle, process, window */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";

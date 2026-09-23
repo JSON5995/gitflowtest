@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global AbortSignal, URL, fetch, process */
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";

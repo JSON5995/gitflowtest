@@ -1,3 +1,5 @@
+/* global Buffer, console, process */
+
 import { readFileSync, writeFileSync } from "node:fs";
 
 const fail = (message) => {

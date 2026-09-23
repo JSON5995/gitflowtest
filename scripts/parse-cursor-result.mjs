@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global process */
 
 import { readFileSync, writeFileSync } from "node:fs";
 

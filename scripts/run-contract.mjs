@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global process */
 
 import { readFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";

@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "apiProbes": [
+    {
+      "name": "hello page",
+      "method": "GET",
+      "path": "/hello",
+      "status": 200,
+      "bodyContains": "Hello World"
+    }
+  ],
+  "journeys": [
+    {
+      "name": "hello counter starts at zero with an accessible button",
+      "startPath": "/hello",
+      "actions": [
+        { "type": "clearLocalStorage", "keys": ["flowHelloCount"] },
+        { "type": "reload" },
+        { "type": "wait", "selector": "#hello-count", "state": "visible" }
+      ],
+      "assertions": [
+        { "type": "text", "selector": "h1", "contains": "Hello World" },
+        { "type": "visible", "selector": "#hello-increment" },
+        { "type": "text", "selector": "#hello-increment", "contains": "Increase count" },
+        { "type": "text", "selector": "#hello-count", "contains": "0" }
+      ]
+    },
+    {
+      "name": "hello counter updates immediately on click without a reload",
+      "startPath": "/hello",
+      "actions": [
+        { "type": "clearLocalStorage", "keys": ["flowHelloCount"] },
+        { "type": "reload" },
+        { "type": "wait", "selector": "#hello-count", "state": "visible" },
+        { "type": "click", "selector": "#hello-increment" },
+        { "type": "click", "selector": "#hello-increment" }
+      ],
+      "assertions": [
+        { "type": "text", "selector": "#hello-count", "contains": "2" }
+      ]
+    },
+    {
+      "name": "hello counter increments and persists across reload",
+      "startPath": "/hello",
+      "actions": [
+        { "type": "clearLocalStorage", "keys": ["flowHelloCount"] },
+        { "type": "reload" },
+        { "type": "wait", "selector": "#hello-count", "state": "visible" },
+        { "type": "click", "selector": "#hello-increment" },
+        { "type": "click", "selector": "#hello-increment" },
+        { "type": "reload" },
+        { "type": "wait", "selector": "#hello-count", "state": "visible" }
+      ],
+      "assertions": [
+        { "type": "text", "selector": "#hello-count", "contains": "2" }
+      ]
+    }
+  ]
+}

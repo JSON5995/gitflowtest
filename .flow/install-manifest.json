@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "kitVersion": 1,
+  "status": "ready",
+  "questions": [],
+  "profile": {
+    "ecosystems": [
+      {
+        "id": "docker",
+        "evidence": [
+          "Dockerfile"
+        ]
+      },
+      {
+        "id": "node",
+        "evidence": [
+          "package.json"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManagers": [
+      {
+        "id": "npm",
+        "evidence": [
+          "package-lock.json"
+        ]
+      }
+    ],
+    "monorepo": false
+  },
+  "skills": [
+    {
+      "id": "node",
+      "version": 1,
+      "evidence": [
+        "package.json"
+      ]
+    },
+    {
+      "id": "docker",
+      "version": 1,
+      "evidence": [
+        "Dockerfile"
+      ]
+    }
+  ],
+  "platforms": [],
+  "files": [
+    {
+      "path": ".cursor/rules/flow.mdc",
+      "sha256": "a15833a72b858d539cb84794f5c5eb418df89847fa95787e139d2f3808f939a3"
+    },
+    {
+      "path": ".flow/AI_RULES.md",
+      "sha256": "2a2d74eed1aa0cb0a044e610bc0a14f9ae4c3523ac7dfeb858ef200bddc6990a"
+    },
+    {
+      "path": ".flow/config.json",
+      "sha256": "3d4e876b0e97c174fceaace41b571be3abac939cb07db02d540029242a3fd8cb"
+    },
+    {
+      "path": ".flow/qa.json",
+      "sha256": "2b9d0de5cc0b162ad7c0f91d8aa7272309804284b75c773877e5cdd6c4f76bc6"
+    },
+    {
+      "path": ".flow/review-schema.json",
+      "sha256": "44c65393a8441d885666f9d6dc1c1d4c7d90700dee3a9cdcd7440072d2ccd93a"
+    },
+    {
+      "path": ".flow/skills/docker.md",
+      "sha256": "fcd49d6cd8443c0a16d95ff132f8ec896bc60eac17e944b2a7d3018e832bc4c3"
+    },
+    {
+      "path": ".flow/skills/node.md",
+      "sha256": "0848023f91f8f9245e579c51bb7bd40fe756a87c1fd94e3656fff22d27d06526"
+    },
+    {
+      "path": ".github/CODEOWNERS",
+      "sha256": "8fb9710f912a8461bd82e48e40b07b038c0d07f0a8aeda6e91212f12a85c2a86"
+    },
+    {
+      "path": ".github/workflows/flow-build.yml",
+      "sha256": "b820af0be430c8ba84a6987c23ba720ea3c2c16a4de536c8ad4b11a774e6be61"
+    },
+    {
+      "path": ".github/workflows/flow-ci.yml",
+      "sha256": "c08f967dc6d73143c94ec19add6d8947c4f011b884b2c76fcbd693962e3920b0"
+    },
+    {
+      "path": ".github/workflows/flow-qa.yml",
+      "sha256": "1b84d17aa519a6c957c988946a0a321b7a8ff7b21667968efcf5223fc11f8141"
+    },
+    {
+      "path": ".github/workflows/flow-review.yml",
+      "sha256": "6eaa2c5cd539bb383541c84e24b74e9dbccbd82117c99961691539f60d28df03"
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "7e2bb081cf9ea1933c13689b79e1cb4ca8aba3adcbf55478f27dd5c826bdecbb"
+    },
+    {
+      "path": "CLAUDE.md",
+      "sha256": "4a7afef8f7b397694010e6f3ba12c3f4ab3d3512ab2670da020470150b01033c"
+    },
+    {
+      "path": "scripts/check-review.mjs",
+      "sha256": "1cf8247a910b4e9ec88758a8523ff714b347fbaf48ad16b039c36e8d33f7cc52"
+    },
+    {
+      "path": "scripts/clarification.mjs",
+      "sha256": "8c623f8388c887f52fb19cc7c563516f3c4b50b2c5d3ec93b55e10b5be52245e"
+    },
+    {
+      "path": "scripts/parse-cursor-result.mjs",
+      "sha256": "d360e8a3fcecce8805a9d1df361d61fe02d509b945a38b95bceed71bcb74b327"
+    },
+    {
+      "path": "scripts/resolve-preview.mjs",
+      "sha256": "c53ab792b0122daf1a0d3fbfe4d65761d6bfa366fb2359edb3825ab5d6a2e992"
+    },
+    {
+      "path": "scripts/run-contract.mjs",
+      "sha256": "451c8bac8242d501391186b1db340fb13481eab11d88d4b2fc5b9b551c988178"
+    },
+    {
+      "path": "scripts/run-real-qa.mjs",
+      "sha256": "fc65747ee2b5d3b9cce1b77f068d523c0524679015a5b4d560ac2feb6bbf5f70"
+    }
+  ],
+  "digest": "c76c564047a12baf0a709417c1fd9d2e742bef28440e93b5a7dee36c9cdad792"
+}

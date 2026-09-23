@@ -15,12 +15,24 @@ const flagValue = (name, fallback) => {
 
 const configPath = flagValue("--config", ".flow/qa.json");
 if (!configPath) fail("--config requires a path");
+const featureConfigPath = flagValue("--feature-config", undefined);
 
 let config;
 try {
   config = JSON.parse(await readFile(configPath, "utf8"));
 } catch (error) {
   fail(`Cannot read real QA contract: ${error instanceof Error ? error.message : "invalid JSON"}`);
+}
+
+let featureConfig;
+if (featureConfigPath) {
+  try {
+    const featureConfigText = await readFile(featureConfigPath, "utf8");
+    if (Buffer.byteLength(featureConfigText) > 64 * 1024) fail("Feature QA overlay exceeds 65536 bytes");
+    featureConfig = JSON.parse(featureConfigText);
+  } catch (error) {
+    fail(`Cannot read feature QA overlay: ${error instanceof Error ? error.message : "invalid JSON"}`);
+  }
 }
 
 const isHttpUrl = (value) => {
@@ -32,6 +44,90 @@ const isHttpUrl = (value) => {
 };
 const isText = (value) => typeof value === "string" && value.trim().length > 0;
 const invalid = [];
+const allowedCredentialNames = new Set(["FLOW_QA_EMAIL", "FLOW_QA_PASSWORD", "FLOW_QA_TOKEN"]);
+const isSameOriginPath = (value) => isText(value)
+  && value.startsWith("/")
+  && !value.startsWith("//")
+  && !value.includes("\\")
+  && !/[\r\n]/.test(value);
+const validateCredentialMapping = (mapping, label) => {
+  if (mapping === undefined) return;
+  if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) {
+    invalid.push(`${label} must map header or variable names to approved QA credentials`);
+    return;
+  }
+  for (const [name, envName] of Object.entries(mapping)) {
+    if (!isText(name) || !isText(envName) || !allowedCredentialNames.has(envName)) {
+      invalid.push(`${label} cannot read ${String(envName)}; only FLOW_QA_EMAIL, FLOW_QA_PASSWORD, and FLOW_QA_TOKEN are allowed`);
+    }
+  }
+};
+if (featureConfig !== undefined) {
+  if (featureConfig?.version !== 1) invalid.push("feature QA overlay version must be 1");
+  const probes = featureConfig?.apiProbes;
+  const journeys = featureConfig?.journeys;
+  if (!Array.isArray(probes)) invalid.push("feature QA overlay apiProbes must be an array");
+  if (!Array.isArray(journeys)) invalid.push("feature QA overlay journeys must be an array");
+  if (Array.isArray(probes) && Array.isArray(journeys) && probes.length + journeys.length === 0) {
+    invalid.push("feature QA overlay must contain at least one API probe or browser journey");
+  }
+  if (Array.isArray(probes) && probes.length > 20) invalid.push("feature QA overlay supports at most 20 API probes");
+  for (const [index, probe] of Array.isArray(probes) ? probes.entries() : []) {
+    if (!isText(probe?.name) || !isSameOriginPath(probe?.path) || !Number.isInteger(probe?.status)) {
+      invalid.push(`feature apiProbes[${index}] requires a name, same-origin path beginning with /, and integer status`);
+    }
+    if (probe?.method !== undefined && !["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"].includes(probe.method)) {
+      invalid.push(`feature apiProbes[${index}] uses an unsupported HTTP method`);
+    }
+    validateCredentialMapping(probe?.headersFromEnv, `feature apiProbes[${index}].headersFromEnv`);
+  }
+  if (Array.isArray(journeys) && journeys.length > 20) invalid.push("feature QA overlay supports at most 20 browser journeys");
+  for (const [journeyIndex, journey] of Array.isArray(journeys) ? journeys.entries() : []) {
+    if (!isText(journey?.name) || !isSameOriginPath(journey?.startPath)) {
+      invalid.push(`feature journeys[${journeyIndex}] requires a name and same-origin startPath beginning with /`);
+    }
+    if (!Array.isArray(journey?.actions) || !Array.isArray(journey?.assertions) || journey.assertions.length === 0) {
+      invalid.push(`feature journeys[${journeyIndex}] requires actions and at least one assertion`);
+      continue;
+    }
+    if (journey.actions.length > 30 || journey.assertions.length > 30) {
+      invalid.push(`feature journeys[${journeyIndex}] exceeds the 30-step safety limit`);
+    }
+    for (const [actionIndex, action] of journey.actions.entries()) {
+      const label = `feature journeys[${journeyIndex}].actions[${actionIndex}]`;
+      if (action?.type === "goto") {
+        if (!isSameOriginPath(action.path)) invalid.push(`${label} requires a same-origin path beginning with /`);
+      } else if (action?.type === "click") {
+        if (!isText(action.selector)) invalid.push(`${label} requires a selector`);
+      } else if (action?.type === "fill") {
+        if (!isText(action.selector)) invalid.push(`${label} requires a selector`);
+        if (!allowedCredentialNames.has(action.valueFromEnv)) invalid.push(`${label} cannot read ${String(action.valueFromEnv)}`);
+      } else if (action?.type === "wait") {
+        if (!isText(action.selector) || (action.state !== undefined && !["visible", "hidden", "attached", "detached"].includes(action.state))) {
+          invalid.push(`${label} requires a selector and a supported state`);
+        }
+      } else {
+        invalid.push(`${label} uses an unsupported deterministic action type`);
+      }
+    }
+    for (const [assertionIndex, assertion] of journey.assertions.entries()) {
+      const label = `feature journeys[${journeyIndex}].assertions[${assertionIndex}]`;
+      const valid = assertion?.type === "visible"
+        ? isText(assertion.selector)
+        : assertion?.type === "text"
+          ? isText(assertion.selector) && isText(assertion.contains)
+          : assertion?.type === "urlContains" && isText(assertion.contains);
+      if (!valid) invalid.push(`${label} is not a supported assertion`);
+    }
+  }
+  if (invalid.length === 0) {
+    config = {
+      ...config,
+      apiProbes: [...config.apiProbes, ...featureConfig.apiProbes],
+      journeys: [...config.journeys, ...featureConfig.journeys],
+    };
+  }
+}
 if (config?.version !== 1) invalid.push("version must be 1");
 if (!isHttpUrl(config?.baseUrl)) invalid.push("baseUrl must be an HTTP(S) URL");
 if (!Array.isArray(config?.apiProbes) || config.apiProbes.length === 0) {
@@ -65,7 +161,9 @@ if (!Array.isArray(config?.design?.requiredCssVariables)) {
 }
 if (invalid.length > 0) fail(`Invalid real QA contract:\n- ${invalid.join("\n- ")}`);
 if (process.argv.includes("--validate")) {
-  process.stdout.write("Real QA contract is valid.\n");
+  process.stdout.write(featureConfigPath
+    ? "Real QA contract and feature QA overlay are valid.\n"
+    : "Real QA contract is valid.\n");
   process.exit(0);
 }
 
@@ -192,7 +290,7 @@ const assertJourney = async (assertion, journeyName) => {
 const browserEvidence = [];
 try {
   for (const viewport of config.viewports) {
-    await page.setViewportSize(viewport.width, viewport.height);
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
     for (const journey of config.journeys) {
       await page.goto(urlFor(journey.startPath), { waitUntil: "domcontentloaded" });
       for (const action of journey.actions) await runAction(action, journey.name);

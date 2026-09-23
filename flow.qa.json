@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "apiProbes": [
+    {
+      "name": "live health identity",
+      "method": "GET",
+      "path": "/health/live",
+      "status": 200,
+      "bodyContains": "\"ok\":true,\"service\":\"flow\",\"version\":\""
+    }
+  ],
+  "journeys": []
+}

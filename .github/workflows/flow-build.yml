@@ -288,12 +288,21 @@ jobs:
           name: flow-build-patch-${{ github.run_id }}
           path: ${{ runner.temp }}/flow-build-patch
 
-      - name: Guard and verify without provider or GitHub write credentials
+      - name: Apply the immutable candidate patch
+        run: |
+          git apply --index --binary "$RUNNER_TEMP/flow-build-patch/flow-build.patch"
+
+      - name: Guard candidate patch against protected paths
         run: |
           FLOW_BASE_SHA="$(git rev-parse HEAD)"
-          git apply --index --binary "$RUNNER_TEMP/flow-build-patch/flow-build.patch"
           node "$RUNNER_TEMP/run-contract.mjs" guard --config "$RUNNER_TEMP/base-flow-config.json" --base "$FLOW_BASE_SHA"
+
+      - name: Install candidate dependencies without credentials
+        run: |
           node "$RUNNER_TEMP/run-contract.mjs" install --config "$RUNNER_TEMP/base-flow-config.json"
+
+      - name: Run deterministic candidate checks without credentials
+        run: |
           node "$RUNNER_TEMP/run-contract.mjs" checks --config "$RUNNER_TEMP/base-flow-config.json"
 
   push:

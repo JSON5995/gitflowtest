@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global AbortSignal, Buffer, URL, document, fetch, getComputedStyle, process, window */
+/* global AbortSignal, Buffer, URL, document, fetch, getComputedStyle, localStorage, process, window */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -46,6 +46,7 @@ const isHttpUrl = (value) => {
 const isText = (value) => typeof value === "string" && value.trim().length > 0;
 const invalid = [];
 const allowedCredentialNames = new Set(["FLOW_QA_EMAIL", "FLOW_QA_PASSWORD", "FLOW_QA_TOKEN"]);
+const safeStorageKey = /^[A-Za-z0-9._:-]{1,200}$/;
 const isSameOriginPath = (value) => isText(value)
   && value.startsWith("/")
   && !value.startsWith("//")
@@ -107,6 +108,13 @@ if (featureConfig !== undefined) {
         if (!isText(action.selector) || (action.state !== undefined && !["visible", "hidden", "attached", "detached"].includes(action.state))) {
           invalid.push(`${label} requires a selector and a supported state`);
         }
+      } else if (action?.type === "clearLocalStorage") {
+        if (!Array.isArray(action.keys) || action.keys.length < 1 || action.keys.length > 20 ||
+          action.keys.some((key) => typeof key !== "string" || !safeStorageKey.test(key))) {
+          invalid.push(`${label} requires 1 to 20 safe localStorage keys`);
+        }
+      } else if (action?.type === "reload") {
+        // A reload is deliberately parameter-free so feature overlays cannot change origin or browser policy.
       } else {
         invalid.push(`${label} uses an unsupported deterministic action type`);
       }
@@ -251,6 +259,14 @@ const runAction = async (action, journeyName) => {
     if (!await page.waitForSelector(action.selector, { state: action.state ?? "visible", timeout: 15_000 })) {
       throw new Error(`Timed out waiting for ${action.selector}`);
     }
+    return;
+  }
+  if (action.type === "clearLocalStorage") {
+    await page.evaluate((keys) => keys.forEach((key) => localStorage.removeItem(key)), action.keys);
+    return;
+  }
+  if (action.type === "reload") {
+    await page.reload({ waitUntil: "domcontentloaded" });
     return;
   }
   if (action.type === "semantic" && stagehand) {

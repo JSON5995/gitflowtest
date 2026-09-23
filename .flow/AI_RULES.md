@@ -16,8 +16,3 @@
 14. For changed API or UI behavior, add or update the root `flow.qa.json` deterministic feature QA overlay. It must use `{ "version": 1, "apiProbes": [...], "journeys": [...] }`; use same-origin paths beginning with `/`, selector actions (`goto`, `click`, `fill`, `wait`), and assertions (`visible`, `text`, `urlContains`). Never put credentials or literal secret values in it; `fill.valueFromEnv` and `headersFromEnv` may reference only `FLOW_QA_EMAIL`, `FLOW_QA_PASSWORD`, or `FLOW_QA_TOKEN`.
 15. Before planning, read `.flow/install-manifest.json`, every referenced `.flow/skills/*.md` file, the repository's own contributor documentation, dependency manifests, framework configuration, and nearby production code and tests. Use the exact versions and conventions found in the repository; a generic framework pattern never overrides local evidence.
 16. If Flow did not recognize the stack, first derive its architecture and install/check/start commands from committed files. If a required command or convention cannot be proven from the repository, request one concrete clarification instead of guessing.
-
-## Detected specialist skills
-
-- Read and follow `.flow/skills/node.md` for Node.js work.
-- Read and follow `.flow/skills/docker.md` for Docker work.

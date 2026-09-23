@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerAdminRoutes, type AdminRouteOptions } from "./admin.js";
+import { registerHelloRoute } from "./hello.js";
 
 export type ServerDependencies = {
   isReady: () => boolean | Promise<boolean>;
@@ -17,6 +18,8 @@ export const buildServer = (dependencies: ServerDependencies): FastifyInstance =
     const ready = await dependencies.isReady();
     return reply.code(ready ? 200 : 503).send({ ok: ready });
   });
+
+  registerHelloRoute(server);
 
   if (dependencies.admin) registerAdminRoutes(server, dependencies.admin);
 

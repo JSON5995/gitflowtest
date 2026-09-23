@@ -9,7 +9,7 @@ afterEach(async () => {
 
 describe("health endpoints", () => {
   it("redirects the root URL to the Admin interface", async () => {
-    const server = buildServer({ isReady: () => true });
+    const server = buildServer({ isReady: () => true, admin: {} as never });
     servers.push(server);
 
     const response = await server.inject({ method: "GET", url: "/" });

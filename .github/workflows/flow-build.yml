@@ -85,7 +85,7 @@ jobs:
               echo
               echo "</details>"
             } > "$RUNNER_TEMP/flow-builder-assignment.md"
-            gh issue comment "$ISSUE_NUMBER" --body-file "$RUNNER_TEMP/flow-builder-assignment.md"
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/flow-builder-assignment.md"
           fi
 
       - name: Resolve the existing branch and issue without exposing credentials downstream
@@ -387,5 +387,5 @@ jobs:
           gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100" \
             --jq '.[].body' > "$RUNNER_TEMP/flow-existing-comments.txt"
           if ! grep -Fq -- "$MARKER" "$RUNNER_TEMP/flow-existing-comments.txt"; then
-            gh issue comment "$ISSUE_NUMBER" --body-file "$RUNNER_TEMP/flow-clarification-comment.md"
+            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/flow-clarification-comment.md"
           fi

@@ -13,6 +13,7 @@
     "build": "tsc -p tsconfig.build.json",
     "dev": "node --env-file-if-exists=.env --import tsx --watch src/index.ts",
     "start": "node --env-file-if-exists=.env dist/index.js",
+    "start:qa": "node dist/qa-server.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

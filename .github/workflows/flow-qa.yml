@@ -168,7 +168,7 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/flow-qa-tools" --no-save --package-lock=false --ignore-scripts @browserbasehq/stagehand@3.7.3 playwright@1.62.1
           "$RUNNER_TEMP/flow-qa-tools/node_modules/.bin/playwright" install --with-deps chromium
 
-      - name: Test the local application without credentials
+      - name: Validate local QA configuration
         if: vars.FLOW_PREVIEW_PROVIDER == '' && vars.FLOW_QA_BASE_URL == ''
         run: |
           HEALTH_URL="$(node -e "const c=require(process.argv[1]);process.stdout.write(c.healthUrl||'')" "$RUNNER_TEMP/base-flow-config.json")"
@@ -176,26 +176,44 @@ jobs:
             echo "A real healthUrl is required in .flow/config.json" >&2
             exit 1
           fi
+          echo "FLOW_LOCAL_HEALTH_URL=${HEALTH_URL}" >> "$GITHUB_ENV"
+
+      - name: Start the local application without credentials
+        if: vars.FLOW_PREVIEW_PROVIDER == '' && vars.FLOW_QA_BASE_URL == ''
+        run: |
           node "$RUNNER_TEMP/run-contract.mjs" start --config "$RUNNER_TEMP/base-flow-config.json" \
             > "$RUNNER_TEMP/flow-qa-evidence/server.log" 2>&1 &
           FLOW_SERVER_PID=$!
-          trap 'kill -TERM "$FLOW_SERVER_PID" >/dev/null 2>&1 || true; wait "$FLOW_SERVER_PID" >/dev/null 2>&1 || true' EXIT
+          echo "FLOW_SERVER_PID=${FLOW_SERVER_PID}" >> "$GITHUB_ENV"
           READY=0
           for ATTEMPT in $(seq 1 30); do
-            if curl --fail --silent --show-error "$HEALTH_URL" > "$RUNNER_TEMP/flow-qa-evidence/health.txt"; then
+            if curl --fail --silent --show-error "$FLOW_LOCAL_HEALTH_URL" > "$RUNNER_TEMP/flow-qa-evidence/health.txt"; then
               READY=1
               break
             fi
             sleep 2
           done
           test "$READY" -eq 1
+
+      - name: Run deterministic local API and browser QA
+        if: vars.FLOW_PREVIEW_PROVIDER == '' && vars.FLOW_QA_BASE_URL == ''
+        run: |
           FEATURE_QA_ARGS=()
           if [ -f "$RUNNER_TEMP/flow-qa-input/flow.qa.json" ]; then
             FEATURE_QA_ARGS=(--feature-config "$RUNNER_TEMP/flow-qa-input/flow.qa.json")
           fi
           FLOW_QA_PROVIDER=cursor node "$RUNNER_TEMP/flow-qa-tools/run-real-qa.mjs" --config "$RUNNER_TEMP/base-qa-config.json" "${FEATURE_QA_ARGS[@]}" --evidence "$RUNNER_TEMP/flow-qa-evidence"
 
+      - name: Stop the local application
+        if: always() && vars.FLOW_PREVIEW_PROVIDER == '' && vars.FLOW_QA_BASE_URL == ''
+        run: |
+          if [ -n "${FLOW_SERVER_PID:-}" ]; then
+            kill -TERM "$FLOW_SERVER_PID" >/dev/null 2>&1 || true
+            wait "$FLOW_SERVER_PID" >/dev/null 2>&1 || true
+          fi
+
       - name: Upload candidate evidence only
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: flow-qa-candidate-${{ github.run_id }}

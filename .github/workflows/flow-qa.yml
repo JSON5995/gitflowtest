@@ -81,7 +81,7 @@ jobs:
               echo
               echo "</details>"
             } > "$RUNNER_TEMP/flow-qa-assignment.md"
-            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/flow-qa-assignment.md"
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/flow-qa-assignment.md"
           fi
 
   candidate:
@@ -454,7 +454,7 @@ jobs:
           } > "$RUNNER_TEMP/flow-qa-evidence-body.md"
           test -n "$FLOW_EVIDENCE_KEY"
           node -e 'const fs=require("fs"),crypto=require("crypto");const body=fs.readFileSync(process.argv[1],"utf8").replace(/\r\n/g,"\n").trim();const payload=["flow-workflow-evidence:v1",process.env.GITHUB_REPOSITORY.toLowerCase(),process.env.PR_NUMBER,process.env.GITHUB_RUN_ID,process.env.HEAD_SHA,body].join("\n");const key=Buffer.from(process.env.FLOW_EVIDENCE_KEY,"base64url");const signature=crypto.createHmac("sha256",key).update(payload).digest("hex");fs.writeFileSync(process.argv[2],"<!-- flow-evidence:v1:"+process.env.GITHUB_RUN_ID+":"+process.env.HEAD_SHA+":"+signature+" -->\n"+body+"\n")' "$RUNNER_TEMP/flow-qa-evidence-body.md" "$RUNNER_TEMP/flow-qa-comment.md"
-          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/flow-qa-comment.md"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/flow-qa-comment.md"
 
       - name: Fail for blocking visual findings
         if: steps.visual_gate.outcome == 'failure'

@@ -1,5 +1,5 @@
 name: Flow Build
-run-name: "Flow Build · Issue #${{ inputs.issue_number }} · Route ${{ inputs.route_id }}"
+run-name: "Builder · ${{ inputs.provider }} · ${{ inputs.model }} · ${{ inputs.effort }} · Issue #${{ inputs.issue_number }} · Route ${{ inputs.route_id }}"
 
 on:
   workflow_dispatch:
@@ -46,7 +46,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-      issues: read
+      issues: write
     outputs:
       branch_ref: ${{ steps.metadata.outputs.branch_ref }}
     steps:
@@ -61,6 +61,32 @@ jobs:
           [[ "$FLOW_MODEL" =~ ^[A-Za-z0-9._:/-]{1,200}$ ]]
           [[ "$FLOW_EFFORT" =~ ^(default|none|low|medium|high|xhigh|max)$ ]]
           [[ "$FLOW_ROUTE_ID" =~ ^[A-Za-z0-9._:-]{1,200}$ ]]
+
+      - name: Publish the auditable builder assignment once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          ROUTE_ID: ${{ inputs.route_id }}
+        run: |
+          MARKER="<!-- flow-agent-assignment:v1:${ROUTE_ID} -->"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100" \
+            --jq '.[].body' > "$RUNNER_TEMP/flow-existing-comments.txt"
+          if ! grep -Fq -- "$MARKER" "$RUNNER_TEMP/flow-existing-comments.txt"; then
+            {
+              echo "$MARKER"
+              echo "## Builder running"
+              echo
+              echo '`${{ inputs.provider }}` · `${{ inputs.model }}` · **${{ inputs.effort }} effort** · [Open run]('${GITHUB_SERVER_URL}'/'${GITHUB_REPOSITORY}'/actions/runs/'${GITHUB_RUN_ID}')'
+              echo
+              echo "<details><summary>Audit metadata</summary>"
+              echo
+              echo '- Role: `Builder`'
+              echo '- Route: `${{ inputs.route_id }}`'
+              echo
+              echo "</details>"
+            } > "$RUNNER_TEMP/flow-builder-assignment.md"
+            gh issue comment "$ISSUE_NUMBER" --body-file "$RUNNER_TEMP/flow-builder-assignment.md"
+          fi
 
       - name: Resolve the existing branch and issue without exposing credentials downstream
         id: metadata

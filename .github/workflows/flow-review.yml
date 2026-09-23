@@ -1,5 +1,5 @@
 name: AI Review
-run-name: "AI Review · PR #${{ inputs.pr_number }} · SHA ${{ inputs.head_sha }} · Route ${{ inputs.route_id }}"
+run-name: "Release Reviewer · ${{ inputs.provider }} · ${{ inputs.model }} · ${{ inputs.effort }} · PR #${{ inputs.pr_number }} · SHA ${{ inputs.head_sha }} · Route ${{ inputs.route_id }}"
 
 on:
   workflow_dispatch:
@@ -36,6 +36,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  announce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Validate assignment metadata
+        env:
+          FLOW_PR_NUMBER: ${{ inputs.pr_number }}
+          FLOW_HEAD_SHA: ${{ inputs.head_sha }}
+          FLOW_MODEL: ${{ inputs.model }}
+          FLOW_EFFORT: ${{ inputs.effort }}
+          FLOW_ROUTE_ID: ${{ inputs.route_id }}
+        run: |
+          [[ "$FLOW_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$FLOW_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$FLOW_MODEL" =~ ^[A-Za-z0-9._:/-]{1,200}$ ]]
+          [[ "$FLOW_EFFORT" =~ ^(default|none|low|medium|high|xhigh|max)$ ]]
+          [[ "$FLOW_ROUTE_ID" =~ ^[A-Za-z0-9._:-]{1,200}$ ]]
+
+      - name: Publish the auditable reviewer assignment once
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          ROUTE_ID: ${{ inputs.route_id }}
+        run: |
+          MARKER="<!-- flow-agent-assignment:v1:${ROUTE_ID} -->"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
+            --jq '.[].body' > "$RUNNER_TEMP/flow-existing-comments.txt"
+          if ! grep -Fq -- "$MARKER" "$RUNNER_TEMP/flow-existing-comments.txt"; then
+            {
+              echo "$MARKER"
+              echo "## Release Reviewer running"
+              echo
+              echo '`${{ inputs.provider }}` · `${{ inputs.model }}` · **${{ inputs.effort }} effort** · [Open run]('${GITHUB_SERVER_URL}'/'${GITHUB_REPOSITORY}'/actions/runs/'${GITHUB_RUN_ID}')'
+              echo
+              echo "<details><summary>Audit metadata</summary>"
+              echo
+              echo '- Role: `Release Reviewer`'
+              echo '- Route: `${{ inputs.route_id }}`'
+              echo '- Exact commit: `${{ inputs.head_sha }}`'
+              echo
+              echo "</details>"
+            } > "$RUNNER_TEMP/flow-reviewer-assignment.md"
+            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/flow-reviewer-assignment.md"
+          fi
+
   collect:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -243,6 +291,31 @@ jobs:
           HEAD_SHA: ${{ inputs.head_sha }}
         run: |
           test -n "$FLOW_EVIDENCE_KEY"
-          node -e 'const fs=require("fs"),crypto=require("crypto");const body=fs.readFileSync(process.argv[1],"utf8").replace(/\r\n/g,"\n").trim();const payload=["flow-workflow-evidence:v1",process.env.GITHUB_REPOSITORY.toLowerCase(),process.env.PR_NUMBER,process.env.GITHUB_RUN_ID,process.env.HEAD_SHA,body].join("\n");const key=Buffer.from(process.env.FLOW_EVIDENCE_KEY,"base64url");const signature=crypto.createHmac("sha256",key).update(payload).digest("hex");fs.writeFileSync(process.argv[2],"<!-- flow-evidence:v1:"+process.env.GITHUB_RUN_ID+":"+process.env.HEAD_SHA+":"+signature+" -->\n"+body+"\n")' "$RUNNER_TEMP/flow-review-result/flow-review.md" "$RUNNER_TEMP/flow-review-comment.md"
+          OUTCOME="$(cat "$RUNNER_TEMP/flow-review-result/flow-review-outcome.txt")"
+          if [ "$OUTCOME" = "success" ]; then
+            VERDICT="✅ Approved"
+            NEXT_ACTION="The release review passed. Flow is continuing toward automatic merge."
+          else
+            VERDICT="❌ Changes required"
+            NEXT_ACTION="Flow is sending the blocking findings to the builder for an automatic repair."
+          fi
+          {
+            echo "## Human TL;DR"
+            echo
+            echo "**${VERDICT}** — ${NEXT_ACTION}"
+            echo
+            echo '`${{ inputs.provider }}` · `${{ inputs.model }}` · **${{ inputs.effort }} effort**'
+            echo
+            echo "<details><summary>Technical evidence for agents and auditors</summary>"
+            echo
+            echo '- Role: `Release Reviewer`'
+            echo '- Route: `${{ inputs.route_id }}`'
+            echo '- Exact commit: `${{ inputs.head_sha }}`'
+            echo
+            cat "$RUNNER_TEMP/flow-review-result/flow-review.md"
+            echo
+            echo "</details>"
+          } > "$RUNNER_TEMP/flow-review-body.md"
+          node -e 'const fs=require("fs"),crypto=require("crypto");const body=fs.readFileSync(process.argv[1],"utf8").replace(/\r\n/g,"\n").trim();const payload=["flow-workflow-evidence:v1",process.env.GITHUB_REPOSITORY.toLowerCase(),process.env.PR_NUMBER,process.env.GITHUB_RUN_ID,process.env.HEAD_SHA,body].join("\n");const key=Buffer.from(process.env.FLOW_EVIDENCE_KEY,"base64url");const signature=crypto.createHmac("sha256",key).update(payload).digest("hex");fs.writeFileSync(process.argv[2],"<!-- flow-evidence:v1:"+process.env.GITHUB_RUN_ID+":"+process.env.HEAD_SHA+":"+signature+" -->\n"+body+"\n")' "$RUNNER_TEMP/flow-review-body.md" "$RUNNER_TEMP/flow-review-comment.md"
           gh pr comment "${PR_NUMBER}" --body-file "$RUNNER_TEMP/flow-review-comment.md"
           test "$(cat "$RUNNER_TEMP/flow-review-result/flow-review-outcome.txt")" = "success"
